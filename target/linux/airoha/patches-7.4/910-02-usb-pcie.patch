@@ -1,0 +1,17 @@
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -1474,8 +1474,13 @@ static int en7581_clk_hw_init(struct pla
+ 
+ 	en7581_register_clocks(&pdev->dev, clk_data, map, base);
+ 
++	/*
++	 * Nothing selects the USB/PCIe shared SerDes lane on EN7581: the
++	 * dedicated PCIe PHY has no set_mode op, so pin it to PCIe here.
++	 */
+ 	val = readl(base + REG_NP_SCU_SSTR);
+-	val &= ~(REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
++	val &= ~(REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK |
++		 REG_USB_PCIE_SEL_MASK);
+ 	writel(val, base + REG_NP_SCU_SSTR);
+ 	val = readl(base + REG_NP_SCU_PCIC);
+ 	writel(val | 3, base + REG_NP_SCU_PCIC);
