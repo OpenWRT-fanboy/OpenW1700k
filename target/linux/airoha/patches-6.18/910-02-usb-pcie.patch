@@ -1,0 +1,11 @@
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -1346,7 +1346,7 @@ static int en7581_clk_hw_init(struct pla
+ 		return err;
+ 
+ 	regmap_clear_bits(clk_map, REG_NP_SCU_SSTR,
+-			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
++			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK | REG_USB_PCIE_SEL_MASK);
+ 	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
+ 			   FIELD_PREP(REG_PCIE_CTRL, 3));
+ 
