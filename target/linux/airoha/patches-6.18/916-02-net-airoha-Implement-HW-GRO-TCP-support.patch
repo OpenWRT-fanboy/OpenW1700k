@@ -4,12 +4,21 @@ From: Lorenzo Bianconi <lorenzo@kernel.org>
 Date: Thu, 14 May 2026 20:25:19 +0200
 Subject: [PATCH] net: airoha: Implement LRO TCP support
 
+OpenWrt backport note: the LRO RX fixup below additionally carries
+three robustness hardenings from net-next c4b23e42 ("net: airoha: add
+LRO offload support") which postdates the base commit backported here:
+mark aggregates SKB_GSO_DODGY so the stack does not merge them back
+into the SW GRO engine, validate AGG_COUNT against
+AIROHA_RXQ_LRO_MAX_AGG_COUNT up front before any allocation (so a
+rejected aggregate leaks nothing), and only update the TCP timestamp
+echo reply when the hardware reports a valid one.
+
 Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 ---
- drivers/net/ethernet/airoha/airoha_eth.c  | 178 ++++++++++++++++++++--
+ drivers/net/ethernet/airoha/airoha_eth.c  | 189 ++++++++++++++++++++--
  drivers/net/ethernet/airoha/airoha_eth.h  |  23 +++
  drivers/net/ethernet/airoha/airoha_regs.h |  22 ++-
- 3 files changed, 208 insertions(+), 15 deletions(-)
+ 3 files changed, 219 insertions(+), 15 deletions(-)
 
 --- a/drivers/net/ethernet/airoha/airoha_eth.c
 +++ b/drivers/net/ethernet/airoha/airoha_eth.c
@@ -106,7 +115,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  		val = FIELD_PREP(QDMA_DESC_LEN_MASK, e->dma_len);
  		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
  		WRITE_ONCE(desc->addr, cpu_to_le32(e->dma_addr));
-@@ -655,12 +725,169 @@ airoha_qdma_get_gdm_dev(struct airoha_et
+@@ -655,12 +725,181 @@ airoha_qdma_get_gdm_dev(struct airoha_et
  	return port->devs[d] ? port->devs[d] : ERR_PTR(-ENODEV);
  }
  
@@ -125,6 +134,10 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +	struct tcphdr *th;
 +	struct page *page;
 +	bool ipv4, ipv6;
++
++	agg_count = FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2);
++	if (agg_count > AIROHA_RXQ_LRO_MAX_AGG_COUNT)
++		return NULL;
 +
 +	ipv4 = FIELD_GET(QDMA_ETH_RXMSG_IP4_MASK, msg1);
 +	ipv6 = FIELD_GET(QDMA_ETH_RXMSG_IP6_MASK, msg1);
@@ -193,7 +206,15 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +			u8 *ptr = (u8 *)th + sizeof(*th) + 2 * sizeof(__be32);
 +			__le32 tcp_ts_reply = READ_ONCE(desc->tcp_ts_reply);
 +
-+			put_unaligned_be32(le32_to_cpu(tcp_ts_reply), ptr);
++			/* The field is pre-zeroed in the posted descriptor,
++			 * so a non-zero value is the hardware confirming the
++			 * timestamp echo reply is valid. Leave TSecr
++			 * untouched otherwise, since the hardware may not
++			 * populate it for every aggregate.
++			 */
++			if (tcp_ts_reply)
++				put_unaligned_be32(le32_to_cpu(tcp_ts_reply),
++						   ptr);
 +		}
 +	}
 +
@@ -224,7 +245,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +			q->buf_size);
 +
 +	shinfo->gso_type = ipv4 ? SKB_GSO_TCPV4 : SKB_GSO_TCPV6;
-+	agg_count = FIELD_GET(QDMA_ETH_RXMSG_AGG_COUNT_MASK, msg2);
++	shinfo->gso_type |= SKB_GSO_DODGY;
 +	shinfo->gso_size = DIV_ROUND_UP(data_len, agg_count);
 +	shinfo->gso_segs = agg_count;
 +
