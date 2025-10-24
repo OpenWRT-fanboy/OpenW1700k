@@ -1,0 +1,70 @@
+From 845e2306e33ba869f604146ab4b26a28a8f05db9 Mon Sep 17 00:00:00 2001
+Message-ID: <845e2306e33ba869f604146ab4b26a28a8f05db9.1768230709.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 7 Jan 2026 11:07:51 +0100
+Subject: [net-next] net: airoha: npu: Add "airoha,en7581-npu-7996"
+ compatibility string
+
+Introduce "airoha,en7581-npu-7996" compatibility string in order to
+specify different firmware binaries if the EN7581 SoC is running MT7996
+(Eagle) chipset.
+This is a preliminary patch to enable NPU offloading for MT7996 (Eagle)
+chipset since it requires different binaries with respect to the ones
+used for MT7992 on the EN7581 SoC.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_npu.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/net/ethernet/airoha/airoha_npu.c b/drivers/net/ethernet/airoha/airoha_npu.c
+index 22f72c146065..0032a4801bca 100644
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -16,6 +16,8 @@
+ 
+ #define NPU_EN7581_FIRMWARE_DATA		"airoha/en7581_npu_data.bin"
+ #define NPU_EN7581_FIRMWARE_RV32		"airoha/en7581_npu_rv32.bin"
++#define NPU_EN7581_7996_FIRMWARE_DATA		"airoha/en7581_MT7996_npu_data.bin"
++#define NPU_EN7581_7996_FIRMWARE_RV32		"airoha/en7581_MT7996_npu_rv32.bin"
+ #define NPU_AN7583_FIRMWARE_DATA		"airoha/an7583_npu_data.bin"
+ #define NPU_AN7583_FIRMWARE_RV32		"airoha/an7583_npu_rv32.bin"
+ #define NPU_EN7581_FIRMWARE_RV32_MAX_SIZE	0x200000
+@@ -624,6 +626,17 @@ static const struct airoha_npu_soc_data en7581_npu_soc_data = {
+ 	},
+ };
+ 
++static const struct airoha_npu_soc_data en7581_7996_npu_soc_data = {
++	.fw_rv32 = {
++		.name = NPU_EN7581_7996_FIRMWARE_RV32,
++		.max_size = NPU_EN7581_FIRMWARE_RV32_MAX_SIZE,
++	},
++	.fw_data = {
++		.name = NPU_EN7581_7996_FIRMWARE_DATA,
++		.max_size = NPU_EN7581_FIRMWARE_DATA_MAX_SIZE,
++	},
++};
++
+ static const struct airoha_npu_soc_data an7583_npu_soc_data = {
+ 	.fw_rv32 = {
+ 		.name = NPU_AN7583_FIRMWARE_RV32,
+@@ -637,6 +650,7 @@ static const struct airoha_npu_soc_data an7583_npu_soc_data = {
+ 
+ static const struct of_device_id of_airoha_npu_match[] = {
+ 	{ .compatible = "airoha,en7581-npu", .data = &en7581_npu_soc_data },
++	{ .compatible = "airoha,en7581-npu-7996", .data = &en7581_7996_npu_soc_data },
+ 	{ .compatible = "airoha,an7583-npu", .data = &an7583_npu_soc_data },
+ 	{ /* sentinel */ }
+ };
+@@ -782,6 +796,8 @@ module_platform_driver(airoha_npu_driver);
+ 
+ MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_DATA);
+ MODULE_FIRMWARE(NPU_EN7581_FIRMWARE_RV32);
++MODULE_FIRMWARE(NPU_EN7581_7996_FIRMWARE_DATA);
++MODULE_FIRMWARE(NPU_EN7581_7996_FIRMWARE_RV32);
+ MODULE_FIRMWARE(NPU_AN7583_FIRMWARE_DATA);
+ MODULE_FIRMWARE(NPU_AN7583_FIRMWARE_RV32);
+ MODULE_LICENSE("GPL");
+-- 
+2.52.0
+
