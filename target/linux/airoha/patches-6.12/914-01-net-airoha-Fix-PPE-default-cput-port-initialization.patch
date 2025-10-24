@@ -1,0 +1,145 @@
+From c805a2db19bae3e2a1b9a49b0aba78bda9ce2c65 Mon Sep 17 00:00:00 2001
+Message-ID: <c805a2db19bae3e2a1b9a49b0aba78bda9ce2c65.1766621957.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 24 Dec 2025 17:29:33 +0100
+Subject: [net 1/2] net: airoha: Fix PPE default cput port initialization.
+
+The default PPE cpu ports configuration is overwritten initializing the
+PPE engine running ppe_init callback in airoha_ppe_offload_setup routine.
+Fix the issue moving the default PPE cpu ports configuration in
+airoha_ppe_hw_init().
+
+Fixes: c71a7a861ef02 ("net: airoha: Select default ppe cpu port in airoha_dev_init()")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 23 +++++---------------
+ drivers/net/ethernet/airoha/airoha_eth.h  |  1 +
+ drivers/net/ethernet/airoha/airoha_ppe.c  | 26 ++++++++++++++++++++++-
+ drivers/net/ethernet/airoha/airoha_regs.h |  7 +++---
+ 4 files changed, 34 insertions(+), 23 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1779,10 +1779,8 @@ static int airhoha_set_gdm2_loopback(str
+ static int airoha_dev_init(struct net_device *dev)
+ {
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+-	struct airoha_qdma *qdma = port->qdma;
+-	struct airoha_eth *eth = qdma->eth;
+-	u32 pse_port, fe_cpu_port;
+-	u8 ppe_id;
++	struct airoha_eth *eth = port->qdma->eth;
++	u32 pse_port = FE_PSE_PORT_PPE1;
+ 
+ 	airoha_set_macaddr(port, dev->dev_addr);
+ 
+@@ -1801,26 +1799,15 @@ static int airoha_dev_init(struct net_de
+ 	case 2:
+ 		if (airoha_ppe_is_enabled(eth, 1)) {
+ 			/* For PPE2 always use secondary cpu port. */
+-			fe_cpu_port = FE_PSE_PORT_CDM2;
+ 			pse_port = FE_PSE_PORT_PPE2;
+ 			break;
+ 		}
+-		fallthrough;
+-	default: {
+-		u8 qdma_id = qdma - &eth->qdma[0];
+-
+-		/* For PPE1 select cpu port according to the running QDMA. */
+-		fe_cpu_port = qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1;
+-		pse_port = FE_PSE_PORT_PPE1;
+ 		break;
+-	}
++	default:
++		break;
+ 	}
+ 
+ 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(port->id), pse_port);
+-	ppe_id = pse_port == FE_PSE_PORT_PPE2 ? 1 : 0;
+-	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT0(ppe_id),
+-		      DFT_CPORT_MASK(port->id),
+-		      fe_cpu_port << __ffs(DFT_CPORT_MASK(port->id)));
+ 
+ 	return 0;
+ }
+@@ -1923,7 +1910,7 @@ static u32 airoha_get_dsa_tag(struct sk_
+ #endif
+ }
+ 
+-static int airoha_get_fe_port(struct airoha_gdm_port *port)
++int airoha_get_fe_port(struct airoha_gdm_port *port)
+ {
+ 	struct airoha_qdma *qdma = port->qdma;
+ 	struct airoha_eth *eth = qdma->eth;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -651,6 +651,7 @@ static inline bool airoha_is_7583(struct
+ 	return eth->soc->version == 0x7583;
+ }
+ 
++int airoha_get_fe_port(struct airoha_gdm_port *port);
+ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
+ 			      struct airoha_gdm_port *port);
+ 
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -85,6 +85,20 @@ static u32 airoha_ppe_get_timestamp(stru
+ 	return FIELD_GET(AIROHA_FOE_IB1_BIND_TIMESTAMP, timestamp);
+ }
+ 
++static void airoha_ppe_set_def_cport(struct airoha_gdm_port *port, u8 ppe_id)
++{
++	struct airoha_qdma *qdma = port->qdma;
++	u8 fport = airoha_get_fe_port(port);
++	struct airoha_eth *eth = qdma->eth;
++	u8 qdma_id = qdma - &eth->qdma[0];
++	u32 fe_cpu_port;
++
++	fe_cpu_port = qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1;
++	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(ppe_id, fport),
++		      DFT_CPORT_MASK(fport),
++		      fe_cpu_port << __ffs(DFT_CPORT_MASK(fport)));
++}
++
+ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
+ {
+ 	u32 sram_ppe_num_data_entries = PPE_SRAM_NUM_ENTRIES, sram_num_entries;
+@@ -147,7 +161,9 @@ static void airoha_ppe_hw_init(struct ai
+ 
+ 		airoha_fe_wr(eth, REG_PPE_HASH_SEED(i), PPE_HASH_SEED);
+ 
+-		for (p = 0; p < ARRAY_SIZE(eth->ports); p++)
++		for (p = 0; p < ARRAY_SIZE(eth->ports); p++) {
++			struct airoha_gdm_port *port = eth->ports[p];
++
+ 			airoha_fe_rmw(eth, REG_PPE_MTU(i, p),
+ 				      FP0_EGRESS_MTU_MASK |
+ 				      FP1_EGRESS_MTU_MASK,
+@@ -155,6 +171,11 @@ static void airoha_ppe_hw_init(struct ai
+ 						 AIROHA_MAX_MTU) |
+ 				      FIELD_PREP(FP1_EGRESS_MTU_MASK,
+ 						 AIROHA_MAX_MTU));
++			if (!port)
++				continue;
++
++			airoha_ppe_set_def_cport(port, i);
++		}
+ 	}
+ }
+ 
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -312,10 +312,9 @@
+ #define REG_PPE_HASH_SEED(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x244)
+ #define PPE_HASH_SEED				0x12345678
+ 
+-#define REG_PPE_DFT_CPORT0(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x248)
+-#define DFT_CPORT_MASK(_n)			GENMASK(3 + ((_n) << 2), ((_n) << 2))
+-
+-#define REG_PPE_DFT_CPORT1(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x24c)
++#define REG_PPE_DFT_CPORT_BASE(_n)		(((_n) ? PPE2_BASE : PPE1_BASE) + 0x248)
++#define REG_PPE_DFT_CPORT(_m, _n)		(REG_PPE_DFT_CPORT_BASE(_m) + (((_n) / 8) << 2))
++#define DFT_CPORT_MASK(_n)			GENMASK(3 + (((_n) % 8) << 2), (((_n) % 8) << 2))
+ 
+ #define REG_PPE_TB_HASH_CFG(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x250)
+ #define PPE_DRAM_HASH1_MODE_MASK		GENMASK(31, 28)
