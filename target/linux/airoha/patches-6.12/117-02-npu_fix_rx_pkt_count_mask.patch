@@ -1,0 +1,15 @@
+---
+ include/linux/soc/airoha/airoha_offload.h |    2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/include/linux/soc/airoha/airoha_offload.h
++++ b/include/linux/soc/airoha/airoha_offload.h
+@@ -75,7 +75,7 @@ static inline void airoha_ppe_dev_check_
+ #define NPU_RX_DMA_DESC_CUR_LEN_MASK	GENMASK(14, 1)
+ #define NPU_RX_DMA_DESC_DONE_MASK	BIT(0)
+ /* INFO */
+-#define NPU_RX_DMA_PKT_COUNT_MASK	GENMASK(31, 28)
++#define NPU_RX_DMA_PKT_COUNT_MASK	GENMASK(31, 29)
+ #define NPU_RX_DMA_PKT_ID_MASK		GENMASK(28, 26)
+ #define NPU_RX_DMA_SRC_PORT_MASK	GENMASK(25, 21)
+ #define NPU_RX_DMA_CRSN_MASK		GENMASK(20, 16)
