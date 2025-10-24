@@ -301,6 +301,10 @@
 	pinctrl-0 = <&pcie2_rst_pins>;
 };
 
+&npu {
+	status = "okay";
+};
+
 &eth {
 	status = "okay";
 };
