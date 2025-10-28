@@ -163,7 +163,7 @@
 
 		partition@400000 {
 			label = "dsd";
-			reg = <0x00400000 0x00200000>;
+			reg = <0x00400000 0x00001000>;
 			read-only;
 
 			nvmem-layout {
@@ -181,14 +181,20 @@
 					#nvmem-cell-cells = <1>;
 				};
 			};
+		};
 
-			nvmem-layout@5000 {
+		partition@401000 {
+			label = "factory";
+			reg = <0x00401000 0x001ff000>;
+			read-only;
+
+			nvmem-layout {
 				compatible = "fixed-layout";
 				#address-cells = <1>;
 				#size-cells = <1>;
 
-				eeprom_factory_5000: eeprom@5000 {
-					reg = <0x5000 0x1e00>;
+				eeprom_factory_4000: eeprom@4000 {
+					reg = <0x4000 0x1e00>;
 				};
 			};
 		};
@@ -237,7 +243,7 @@
 			reg = <0x0000 0 0 0 0>;
 			#address-cells = <1>;
 			#size-cells = <0>;
-			nvmem-cells = <&eeprom_factory_5000>;
+			nvmem-cells = <&eeprom_factory_4000>;
 			nvmem-cell-names = "eeprom";
 			airoha,npu = <&npu>;
 			airoha,eth = <&eth>;
