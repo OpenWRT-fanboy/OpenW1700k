@@ -1,0 +1,40 @@
+From e3b5254b671220ffc7d0abcab5fda8b35da5fb03 Mon Sep 17 00:00:00 2001
+Message-ID: <e3b5254b671220ffc7d0abcab5fda8b35da5fb03.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 24 Oct 2025 19:17:13 +0200
+Subject: [PATCH 12/17] mt76: Enable npu support for mt7996 devices
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ npu.c | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/npu.c b/npu.c
+index dcc6b9e2..dd954df9 100644
+--- a/npu.c
++++ b/npu.c
+@@ -443,10 +443,6 @@ int mt76_npu_init(struct mt76_dev *dev, phys_addr_t phy_addr, int type)
+ 	struct airoha_npu *npu;
+ 	int err = 0;
+ 
+-	/* NPU offloading is only supported by MT7992 */
+-	if (!is_mt7992(dev))
+-		return 0;
+-
+ 	mutex_lock(&dev->mutex);
+ 
+ 	npu = airoha_npu_get(dev->dev);
+@@ -479,7 +475,7 @@ int mt76_npu_init(struct mt76_dev *dev, phys_addr_t phy_addr, int type)
+ 	dev->mmio.phy_addr = phy_addr;
+ 	dev->mmio.npu_type = type;
+ 	/* NPU offloading requires HW-RRO for RX packet reordering. */
+-	dev->hwrro_mode = MT76_HWRRO_V3_1;
++	dev->hwrro_mode = is_mt7996(dev) ? MT76_HWRRO_V3 : MT76_HWRRO_V3_1;
+ 	dev->rx_token_size = 32768;
+ 
+ 	rcu_assign_pointer(dev->mmio.npu, npu);
+-- 
+2.52.0
+

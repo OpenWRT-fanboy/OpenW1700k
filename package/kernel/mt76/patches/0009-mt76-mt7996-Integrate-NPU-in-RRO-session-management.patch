@@ -1,0 +1,129 @@
+From 44996cc18a3fbdf99e3eca6d7faaa37e9ddd7b6f Mon Sep 17 00:00:00 2001
+Message-ID: <44996cc18a3fbdf99e3eca6d7faaa37e9ddd7b6f.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 25 Oct 2025 17:34:54 +0200
+Subject: [PATCH 09/17] mt76: mt7996: Integrate NPU in RRO session management
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt76.h        | 10 ++++++++++
+ mt7996/init.c | 16 +++++++++++++++-
+ npu.c         | 30 ++++++++++++++++++++++++++++++
+ 3 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/mt76.h b/mt76.h
+index b41af7df..c7195e13 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -1660,6 +1660,9 @@ void mt76_npu_txdesc_cleanup(struct mt76_queue *q, int index);
+ int mt76_npu_net_setup_tc(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			  struct net_device *dev, enum tc_setup_type type,
+ 			  void *type_data);
++int mt76_npu_send_txrx_addr(struct mt76_dev *dev, int ifindex,
++			    u32 direction, u32 i_count_addr,
++			    u32 o_status_addr, u32 o_count_addr);
+ #else
+ static inline void mt76_npu_check_ppe(struct mt76_dev *dev,
+ 				      struct sk_buff *skb, u32 info)
+@@ -1718,6 +1721,13 @@ static inline int mt76_npu_net_setup_tc(struct ieee80211_hw *hw,
+ {
+ 	return -EOPNOTSUPP;
+ }
++
++static inline int mt76_npu_send_txrx_addr(struct mt76_dev *dev, int ifindex,
++					  u32 direction, u32 i_count_addr,
++					  u32 o_status_addr, u32 o_count_addr)
++{
++	return -EOPNOTSUPP;
++}
+ #endif /* CONFIG_MT76_NPU */
+ 
+ static inline bool mt76_npu_device_active(struct mt76_dev *dev)
+diff --git a/mt7996/init.c b/mt7996/init.c
+index 286c6b8e..25d5d236 100644
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -942,6 +942,12 @@ static int mt7996_wed_rro_init(struct mt7996_dev *dev)
+ 			addr++;
+ 		}
+ 
++		if (is_mt7996(&dev->mt76) &&
++		    mt76_npu_device_active(&dev->mt76))
++			mt76_npu_send_txrx_addr(&dev->mt76, 0, i,
++					dev->wed_rro.addr_elem[i].phy_addr,
++					0, 0);
++
+ #ifdef CONFIG_NET_MEDIATEK_SOC_WED
+ 		if (mtk_wed_device_active(&dev->mt76.mmio.wed) &&
+ 		    mtk_wed_get_rx_capa(&dev->mt76.mmio.wed)) {
+@@ -1002,6 +1008,10 @@ static int mt7996_wed_rro_init(struct mt7996_dev *dev)
+ 		addr++;
+ 	}
+ 
++	if (is_mt7996(&dev->mt76) && mt76_npu_device_active(&dev->mt76))
++		mt76_npu_send_txrx_addr(&dev->mt76, 1, 0,
++					dev->wed_rro.session.phy_addr, 0, 0);
++
+ 	mt7996_rro_hw_init(dev);
+ 
+ 	return mt7996_dma_rro_init(dev);
+@@ -1088,8 +1098,12 @@ static void mt7996_wed_rro_work(struct work_struct *work)
+ 				     list);
+ 		list_del_init(&e->list);
+ 
+-		if (mt76_npu_device_active(&dev->mt76))
++		if (mt76_npu_device_active(&dev->mt76)) {
++			if (is_mt7996(&dev->mt76))
++				mt76_npu_send_txrx_addr(&dev->mt76, 3, e->id,
++							0, 0, 0);
+ 			goto reset_session;
++		}
+ 
+ 		for (i = 0; i < MT7996_RRO_WINDOW_MAX_LEN; i++) {
+ 			void *ptr = dev->wed_rro.session.ptr;
+diff --git a/npu.c b/npu.c
+index e332e4e0..dcc6b9e2 100644
+--- a/npu.c
++++ b/npu.c
+@@ -383,6 +383,36 @@ int mt76_npu_net_setup_tc(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ }
+ EXPORT_SYMBOL_GPL(mt76_npu_net_setup_tc);
+ 
++int mt76_npu_send_txrx_addr(struct mt76_dev *dev, int ifindex,
++			    u32 direction, u32 i_count_addr,
++			    u32 o_status_addr, u32 o_count_addr)
++{
++	struct {
++		__le32 dir;
++		__le32 in_count_addr;
++		__le32 out_status_addr;
++		__le32 out_count_addr;
++	} info = {
++		.dir = cpu_to_le32(direction),
++		.in_count_addr = cpu_to_le32(i_count_addr),
++		.out_status_addr = cpu_to_le32(o_status_addr),
++		.out_count_addr = cpu_to_le32(o_count_addr),
++	};
++	struct airoha_npu *npu;
++	int err = -ENODEV;
++
++	rcu_read_lock();
++	npu = rcu_dereference(dev->mmio.npu);
++	if (npu)
++		err = airoha_npu_wlan_send_msg(npu, ifindex,
++				WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
++				&info, sizeof(info), GFP_ATOMIC);
++	rcu_read_unlock();
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(mt76_npu_send_txrx_addr);
++
+ void mt76_npu_disable_irqs(struct mt76_dev *dev)
+ {
+ 	struct airoha_npu *npu;
+-- 
+2.52.0
+

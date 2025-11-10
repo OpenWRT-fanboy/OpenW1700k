@@ -1,0 +1,31 @@
+From 7fbdb91f05ea8f6cfff3fa8ef1f8b1e243b9ef24 Mon Sep 17 00:00:00 2001
+Message-ID: <7fbdb91f05ea8f6cfff3fa8ef1f8b1e243b9ef24.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 11:27:07 +0100
+Subject: [PATCH 16/17] mt76: dma: Do not kick npu queues in
+ mt76_dma_rx_fill_buf()
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ dma.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/dma.c b/dma.c
+index fc2ac463..e5712fc0 100644
+--- a/dma.c
++++ b/dma.c
+@@ -778,7 +778,8 @@ done:
+ 		frames++;
+ 	}
+ 
+-	if (frames || mt76_queue_is_wed_rx(q))
++	if ((frames || mt76_queue_is_wed_rx(q)) &&
++	    mt76_npu_queue_should_schedule(q))
+ 		mt76_dma_kick_queue(dev, q);
+ 
+ 	return frames;
+-- 
+2.52.0
+

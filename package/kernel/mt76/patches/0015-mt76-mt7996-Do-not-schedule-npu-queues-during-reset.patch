@@ -1,0 +1,98 @@
+From a789613893788468da08b9d16dd36080d16f0edc Mon Sep 17 00:00:00 2001
+Message-ID: <a789613893788468da08b9d16dd36080d16f0edc.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 26 Nov 2025 23:20:21 +0100
+Subject: [PATCH 15/17] mt76: mt7996: Do not schedule npu queues during reset
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt76.h       | 14 ++++++++++++++
+ mt7996/dma.c |  6 ++++++
+ mt7996/mac.c |  6 ++++++
+ 3 files changed, 26 insertions(+)
+
+diff --git a/mt76.h b/mt76.h
+index c7195e13..a89bf499 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -2015,6 +2015,20 @@ static inline bool mt76_queue_is_npu_rx(struct mt76_queue *q)
+ 	       FIELD_GET(MT_QFLAG_WED_TYPE, q->flags) == MT76_WED_Q_RX;
+ }
+ 
++static inline bool mt76_npu_queue_should_schedule(struct mt76_queue *q)
++{
++	struct mt76_dev *dev = q->dev;
++
++	if (!mt76_npu_device_active(dev))
++		return true;
++
++	if (!mt76_queue_is_wed_rro(q) &&
++	    FIELD_GET(MT_QFLAG_WED_TYPE, q->flags) != MT76_WED_Q_TXFREE)
++		return true;
++
++	return false;
++}
++
+ struct mt76_txwi_cache *
+ mt76_token_release(struct mt76_dev *dev, int token, bool *wake);
+ int mt76_token_consume(struct mt76_dev *dev, struct mt76_txwi_cache **ptxwi);
+diff --git a/mt7996/dma.c b/mt7996/dma.c
+index b8f9a088..771bd985 100644
+--- a/mt7996/dma.c
++++ b/mt7996/dma.c
+@@ -750,6 +750,9 @@ int mt7996_dma_init(struct mt7996_dev *dev)
+ 	     (is_mt7992(&dev->mt76)))) {
+ 		dev->mt76.q_rx[MT_RXQ_MAIN_WA].flags = MT_WED_Q_TXFREE;
+ 		dev->mt76.q_rx[MT_RXQ_MAIN_WA].wed = wed;
++	} else if (is_mt7992(&dev->mt76) &&
++		   mt76_npu_device_active(&dev->mt76)) {
++		dev->mt76.q_rx[MT_RXQ_MAIN_WA].flags = MT_WED_Q_TXFREE;
+ 	}
+ 
+ 	if (mt7996_has_wa(dev)) {
+@@ -765,6 +768,7 @@ int mt7996_dma_init(struct mt7996_dev *dev)
+ 			dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0].flags = MT_WED_Q_TXFREE;
+ 			dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0].wed = wed;
+ 		}
++
+ 		ret = mt76_queue_alloc(dev, &dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0],
+ 				       MT_RXQ_ID(MT_RXQ_TXFREE_BAND0),
+ 				       MT7996_RX_MCU_RING_SIZE,
+@@ -882,6 +886,8 @@ int mt7996_dma_init(struct mt7996_dev *dev)
+ 				/* tx free notify event from WA for band0 */
+ 				dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0].flags = MT_WED_Q_TXFREE;
+ 				dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0].wed = wed;
++			} else if (mt76_npu_device_active(&dev->mt76)) {
++				dev->mt76.q_rx[MT_RXQ_TXFREE_BAND0].flags = MT_WED_Q_TXFREE;
+ 			}
+ 
+ 			ret = mt76_queue_alloc(dev,
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index 8c908b3b..b718fd7d 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -2562,6 +2562,9 @@ void mt7996_mac_reset_work(struct work_struct *work)
+ 		    mt76_queue_is_wed_rro(&dev->mt76.q_rx[i]))
+ 			continue;
+ 
++		if (!mt76_npu_queue_should_schedule(&dev->mt76.q_rx[i]))
++			continue;
++
+ 		napi_disable(&dev->mt76.napi[i]);
+ 	}
+ 	napi_disable(&dev->mt76.tx_napi);
+@@ -2617,6 +2620,9 @@ void mt7996_mac_reset_work(struct work_struct *work)
+ 		    mt76_queue_is_wed_rro(&dev->mt76.q_rx[i]))
+ 			continue;
+ 
++		if (!mt76_npu_queue_should_schedule(&dev->mt76.q_rx[i]))
++			continue;
++
+ 		napi_enable(&dev->mt76.napi[i]);
+ 		local_bh_disable();
+ 		napi_schedule(&dev->mt76.napi[i]);
+-- 
+2.52.0
+

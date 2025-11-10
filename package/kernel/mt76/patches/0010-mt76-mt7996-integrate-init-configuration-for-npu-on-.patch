@@ -1,0 +1,49 @@
+From 3604dfb90543ce48e35990acb0aa9dcfa544c81d Mon Sep 17 00:00:00 2001
+Message-ID: <3604dfb90543ce48e35990acb0aa9dcfa544c81d.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 27 Nov 2025 10:01:39 +0100
+Subject: [PATCH 10/17] mt76: mt7996: integrate init configuration for npu on
+ MT7990
+
+---
+ mt7996/init.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/mt7996/init.c b/mt7996/init.c
+index 25d5d236..80671f25 100644
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -593,7 +593,7 @@ static void mt7996_mac_init_basic_rates(struct mt7996_dev *dev)
+ void mt7996_mac_init(struct mt7996_dev *dev)
+ {
+ #define HIF_TXD_V2_1	0x21
+-	int i;
++	int i, rx_path_type;
+ 
+ 	mt76_clear(dev, MT_MDP_DCR2, MT_MDP_DCR2_RX_TRANS_SHORT);
+ 
+@@ -607,11 +607,16 @@ void mt7996_mac_init(struct mt7996_dev *dev)
+ 	}
+ 
+ 	/* rro module init */
+-	if (dev->hif2)
++	if (dev->hif2) {
++		if (mt76_npu_device_active(&dev->mt76))
++			rx_path_type = is_mt7996(&dev->mt76) ? 6 : 8;
++		else
++			rx_path_type = is_mt7996(&dev->mt76) ? 2 : 7;
+ 		mt7996_mcu_set_rro(dev, UNI_RRO_SET_PLATFORM_TYPE,
+-				   is_mt7996(&dev->mt76) ? 2 : 7);
+-	else
++				   rx_path_type);
++	} else {
+ 		mt7996_mcu_set_rro(dev, UNI_RRO_SET_PLATFORM_TYPE, 0);
++	}
+ 
+ 	if (mt7996_has_hwrro(dev)) {
+ 		u16 timeout;
+-- 
+2.52.0
+

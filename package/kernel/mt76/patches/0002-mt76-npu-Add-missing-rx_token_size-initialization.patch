@@ -1,0 +1,28 @@
+From 6760f9629d56fe89369250f18365c621a475e203 Mon Sep 17 00:00:00 2001
+Message-ID: <6760f9629d56fe89369250f18365c621a475e203.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 26 Nov 2025 22:59:52 +0100
+Subject: [PATCH 02/17] mt76: npu: Add missing rx_token_size initialization
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ npu.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/npu.c b/npu.c
+index df5cecd0..e332e4e0 100644
+--- a/npu.c
++++ b/npu.c
+@@ -450,6 +450,7 @@ int mt76_npu_init(struct mt76_dev *dev, phys_addr_t phy_addr, int type)
+ 	dev->mmio.npu_type = type;
+ 	/* NPU offloading requires HW-RRO for RX packet reordering. */
+ 	dev->hwrro_mode = MT76_HWRRO_V3_1;
++	dev->rx_token_size = 32768;
+ 
+ 	rcu_assign_pointer(dev->mmio.npu, npu);
+ 	rcu_assign_pointer(dev->mmio.ppe_dev, ppe_dev);
+-- 
+2.52.0
+

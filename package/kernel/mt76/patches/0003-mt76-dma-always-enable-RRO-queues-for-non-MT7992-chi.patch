@@ -1,0 +1,53 @@
+From 9a639b90eb9c53073c8774a9648bb2d96cc27491 Mon Sep 17 00:00:00 2001
+Message-ID: <9a639b90eb9c53073c8774a9648bb2d96cc27491.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 24 Oct 2025 17:39:36 +0200
+Subject: [PATCH 03/17] mt76: dma: always enable RRO queues for non-MT7992
+ chipset
+
+Intialize NPU desc_base after configuring ring_size.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ dma.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/dma.c b/dma.c
+index f240016e..fc2ac463 100644
+--- a/dma.c
++++ b/dma.c
+@@ -6,6 +6,7 @@
+ #include <linux/dma-mapping.h>
+ #include "mt76.h"
+ #include "dma.h"
++#include "mt76_connac.h"
+ 
+ static struct mt76_txwi_cache *
+ mt76_alloc_txwi(struct mt76_dev *dev)
+@@ -188,16 +189,18 @@ mt76_dma_queue_magic_cnt_init(struct mt76_dev *dev, struct mt76_queue *q)
+ static void
+ mt76_dma_sync_idx(struct mt76_dev *dev, struct mt76_queue *q)
+ {
+-	Q_WRITE(q, desc_base, q->desc_dma);
+-	if ((q->flags & MT_QFLAG_WED_RRO_EN) && !mt76_npu_device_active(dev))
++	if ((q->flags & MT_QFLAG_WED_RRO_EN) &&
++	    (!is_mt7992(dev) || !mt76_npu_device_active(dev)))
+ 		Q_WRITE(q, ring_size, MT_DMA_RRO_EN | q->ndesc);
+ 	else
+ 		Q_WRITE(q, ring_size, q->ndesc);
+ 
+ 	if (mt76_queue_is_npu_tx(q)) {
+-		writel(q->desc_dma, &q->regs->desc_base);
+ 		writel(q->ndesc, &q->regs->ring_size);
++		writel(q->desc_dma, &q->regs->desc_base);
+ 	}
++
++	Q_WRITE(q, desc_base, q->desc_dma);
+ 	q->head = Q_READ(q, dma_idx);
+ 	q->tail = q->head;
+ }
+-- 
+2.52.0
+

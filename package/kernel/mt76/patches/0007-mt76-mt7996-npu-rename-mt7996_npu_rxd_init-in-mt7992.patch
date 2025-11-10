@@ -1,0 +1,39 @@
+From e75141248e053b2c7934a6c640e8ace5a0dbd36e Mon Sep 17 00:00:00 2001
+Message-ID: <e75141248e053b2c7934a6c640e8ace5a0dbd36e.1764712622.git.lorenzo@kernel.org>
+In-Reply-To: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+References: <6b7faf9dc0f8ea8c7701273a96e3d81257d7c6d7.1764712622.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 25 Oct 2025 13:37:20 +0200
+Subject: [PATCH 07/17] mt76: mt7996: npu: rename mt7996_npu_rxd_init() in
+ mt7992_npu_rxd_init()
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/npu.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index d79f8dfb..a9569278 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -122,7 +122,7 @@ static int mt7996_npu_offload_init(struct mt7996_dev *dev,
+ 	return 0;
+ }
+ 
+-static int mt7996_npu_rxd_init(struct mt7996_dev *dev, struct airoha_npu *npu)
++static int mt7992_npu_rxd_init(struct mt7996_dev *dev, struct airoha_npu *npu)
+ {
+ 	u32 val;
+ 	int err;
+@@ -304,7 +304,7 @@ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 	if (err)
+ 		goto unlock;
+ 
+-	err = mt7996_npu_rxd_init(dev, npu);
++	err = mt7992_npu_rxd_init(dev, npu);
+ 	if (err)
+ 		goto unlock;
+ 
+-- 
+2.52.0
+
