@@ -1,0 +1,98 @@
+diff --git a/mt76.h b/mt76.h
+index 0c067b14a900..8125d9fd11fb 100644
+--- a/mt76.h
++++ b/mt76.h
+@@ -1012,6 +1012,8 @@  struct mt76_dev {
+ 		struct mt76_vif_link *mlink;
+ 		struct mt76_phy *phy;
+ 		int chan_idx;
++		bool beacon_wait;
++		bool beacon_received;
+ 	} scan;
+ 
+ #ifdef CONFIG_NL80211_TESTMODE
+@@ -1599,6 +1601,7 @@  int mt76_get_rate(struct mt76_dev *dev,
+ int mt76_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 		 struct ieee80211_scan_request *hw_req);
+ void mt76_cancel_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
++void mt76_scan_rx_beacon(struct mt76_dev *dev, struct ieee80211_channel *chan);
+ void mt76_sw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 		  const u8 *mac);
+ void mt76_sw_scan_complete(struct ieee80211_hw *hw,
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index 2560e2f46e89..11cbcf82460e 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -554,6 +554,9 @@  mt7996_mac_fill_rx(struct mt7996_dev *dev, enum mt76_rxq_id q,
+ 		qos_ctl = FIELD_GET(MT_RXD10_QOS_CTL, v2);
+ 		seq_ctrl = FIELD_GET(MT_RXD10_SEQ_CTRL, v2);
+ 
++		if (ieee80211_is_beacon(fc))
++			mt76_scan_rx_beacon(&dev->mt76, mphy->chandef.chan);
++
+ 		rxd += 4;
+ 		if ((u8 *)rxd - skb->data >= skb->len)
+ 			return -EINVAL;
+diff --git a/scan.c b/scan.c
+index 0b1922f7792e..5746aeb3e608 100644
+--- a/scan.c
++++ b/scan.c
+@@ -79,6 +79,23 @@  mt76_scan_send_probe(struct mt76_dev *dev, struct cfg80211_ssid *ssid)
+ 	rcu_read_unlock();
+ }
+ 
++void mt76_scan_rx_beacon(struct mt76_dev *dev, struct ieee80211_channel *chan)
++{
++	struct mt76_phy *phy;
++
++	if (!dev->scan.beacon_wait || dev->scan.beacon_received ||
++	    dev->scan.chan != chan)
++		return;
++
++	phy = dev->scan.phy;
++	if (!phy)
++		return;
++
++	dev->scan.beacon_received = true;
++	ieee80211_queue_delayed_work(phy->hw, &dev->scan_work, 0);
++}
++EXPORT_SYMBOL_GPL(mt76_scan_rx_beacon);
++
+ void mt76_scan_work(struct work_struct *work)
+ {
+ 	struct mt76_dev *dev = container_of(work, struct mt76_dev,
+@@ -87,8 +104,15 @@  void mt76_scan_work(struct work_struct *work)
+ 	struct cfg80211_chan_def chandef = {};
+ 	struct mt76_phy *phy = dev->scan.phy;
+ 	int duration = HZ / 9; /* ~110 ms */
++	bool beacon_rx;
+ 	int i;
+ 
++	beacon_rx = dev->scan.beacon_wait && dev->scan.beacon_received;
++	dev->scan.beacon_wait = false;
++
++	if (beacon_rx)
++		goto probe;
++
+ 	if (dev->scan.chan_idx >= req->n_channels) {
+ 		mt76_scan_complete(dev, false);
+ 		return;
+@@ -105,10 +129,16 @@  void mt76_scan_work(struct work_struct *work)
+ 	if (dev->scan.chan != phy->main_chandef.chan)
+ 		mt76_set_channel(phy, &chandef, true);
+ 
+-	if (!req->n_ssids ||
+-	    chandef.chan->flags & (IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR))
++	if (!req->n_ssids)
+ 		goto out;
+ 
++	if (chandef.chan->flags & (IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR)) {
++		dev->scan.beacon_received = false;
++		dev->scan.beacon_wait = true;
++		goto out;
++	}
++
++probe:
+ 	if (phy->offchannel)
+ 		duration = HZ / 16; /* ~60 ms */
+ 	local_bh_disable();
