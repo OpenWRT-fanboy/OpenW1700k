@@ -123,6 +123,13 @@
 		};
 	};
 
+	pcie2_rst_pins: pcie2-rst-pins {
+		conf {
+			pins = "pcie_reset2";
+			drive-open-drain = <1>;
+		};
+	};
+
 	uart2_pins: uart2-pins {
 		mux {
 			function = "uart";
@@ -271,6 +278,13 @@
 			};
 		};
 	};
+};
+
+&pcie2 {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie2_rst_pins>;
 };
 
 &eth {
