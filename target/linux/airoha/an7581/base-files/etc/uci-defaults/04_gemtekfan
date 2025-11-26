@@ -8,9 +8,18 @@ board=$(board_name)
 
 case "$board" in
 gemtek,w1700k)
-    # Enable automatic fan control
-    echo 2 > /sys/class/hwmon/hwmon5/pwm1_enable
-    ;;
+	# Disable automatic control temporarily to safely write
+	echo 1 > /sys/class/hwmon/hwmon5/pwm1_enable
+
+	# Apply new PWM values
+	echo 54  > /sys/class/hwmon/hwmon5/pwm1_auto_point1_pwm
+	echo 69  > /sys/class/hwmon/hwmon5/pwm1_auto_point2_pwm
+	echo 95  > /sys/class/hwmon/hwmon5/pwm1_auto_point3_pwm
+	echo 199 > /sys/class/hwmon/hwmon5/pwm1_auto_point4_pwm
+
+	# Re-enable automatic mode
+	echo 2 > /sys/class/hwmon/hwmon5/pwm1_enable
+	;;
 esac
 
 exit 0
