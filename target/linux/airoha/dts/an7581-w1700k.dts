@@ -17,10 +17,10 @@
 
 	aliases {
 		serial0 = &uart1;
-		led-boot = &led_status_red;
-		led-failsafe = &led_status_blue;
+		led-boot = &led_status_green;
+		led-failsafe = &led_status_red;
 		led-upgrade = &led_status_blue;
-		led-running = &led_status_green;
+		led-running = &led_status_white;
 	};
 
 	chosen {
@@ -130,6 +130,20 @@
 		};
 	};
 
+	gswp1_led0_pins: gswp1-led0-pins {
+		mux {
+			function = "phy1_led0";
+			pins = "gpio33";
+		};
+	};
+
+	gswp2_led0_pins: gswp2-led0-pins {
+		mux {
+			function = "phy2_led0";
+			pins = "gpio34";
+		};
+	};
+
 	uart2_pins: uart2-pins {
 		mux {
 			function = "uart";
@@ -170,7 +184,7 @@
 
 		partition@400000 {
 			label = "dsd";
-			reg = <0x00400000 0x00200000>;
+			reg = <0x00400000 0x00001000>;
 			read-only;
 
 			nvmem-layout {
@@ -188,14 +202,20 @@
 					#nvmem-cell-cells = <1>;
 				};
 			};
+		};
 
-			nvmem-layout@5000 {
+		partition@401000 {
+			label = "factory";
+			reg = <0x00401000 0x001ff000>;
+			read-only;
+
+			nvmem-layout {
 				compatible = "fixed-layout";
 				#address-cells = <1>;
 				#size-cells = <1>;
 
-				eeprom_factory_5000: eeprom@5000 {
-					reg = <0x5000 0x1e00>;
+				eeprom_factory_4000: eeprom@4000 {
+					reg = <0x4000 0x1e00>;
 				};
 			};
 		};
@@ -244,7 +264,7 @@
 			reg = <0x0000 0 0 0 0>;
 			#address-cells = <1>;
 			#size-cells = <0>;
-			nvmem-cells = <&eeprom_factory_5000>;
+			nvmem-cells = <&eeprom_factory_4000>;
 			nvmem-cell-names = "eeprom";
 			airoha,npu = <&npu>;
 			airoha,eth = <&eth>;
@@ -327,8 +347,6 @@
 			reset-gpios = <&en7581_pinctrl 46 GPIO_ACTIVE_LOW>;
 			reset-assert-us = <40000>;
 			reset-deassert-us = <150000>;
-			interrupt-parent = <&en7581_pinctrl>;
-			interrupts = <22 IRQ_TYPE_LEVEL_LOW>;
 			realtek,pnswap-tx;
 			realtek,pnswap-rx;
 		};
@@ -339,28 +357,42 @@
 			reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
 			reset-assert-us = <40000>;
 			reset-deassert-us = <150000>;
-			interrupt-parent = <&en7581_pinctrl>;
-			interrupts = <23 IRQ_TYPE_LEVEL_LOW>;
 			realtek,pnswap-tx;
 			realtek,pnswap-rx;
 		};
 	};
 };
 
+&gsw_phy1 {
+	status = "okay";
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp1_led0_pins>;
+};
+
+&gsw_phy1_led0 {
+	status = "okay";
+	function = LED_FUNCTION_LAN;
+};
+
+&gsw_phy2 {
+	status = "okay";
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp2_led0_pins>;
+};
+
+&gsw_phy2_led0 {
+	status = "okay";
+	function = LED_FUNCTION_LAN;
+};
+
 &gsw_port1 {
+	status = "okay";
 	label = "lan3";
 };
 
 &gsw_port2 {
+	status = "okay";
 	label = "lan4";
-};
-
-&gsw_port3 {
-	status = "disabled";
-};
-
-&gsw_port4 {
-	status = "disabled";
 };
 
 &uart2 {
