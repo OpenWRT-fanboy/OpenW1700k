@@ -1,0 +1,97 @@
+From: Ryan Chen <rchen14b@gmail.com>
+Subject: [PATCH] netfilter: nft_flow_offload: fix bridge flow offload for
+ Airoha PPE
+
+When bridged traffic passes through nft_flow_offload, the route tuple
+contains the bridge interface (e.g., br-lan) rather than the physical
+port interfaces. This prevents hardware flow offload engines like
+Airoha PPE from properly accelerating bridge traffic, as they require
+physical interface indices for FLOW_OFFLOAD_XMIT_DIRECT mode.
+
+This patch captures the physical bridge port information from the
+skb's nf_bridge_info (physinif/physoutif) and populates both
+directions of the route tuple with the correct physical interface
+indices and MAC addresses.
+
+The fix only activates when:
+- Bridge traffic is detected (physinif and physoutif are non-zero)
+- No VLAN encapsulation is involved (to preserve kernel's
+  dev_fill_forward_path() VLAN handling)
+- Device type is Ethernet
+
+This has no impact on normal Layer 3 routing offload or VLAN bridge
+scenarios.
+
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+---
+ net/netfilter/nft_flow_offload.c | 49 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -10,6 +10,8 @@
+ #include <linux/netfilter/nf_tables.h>
+ #include <net/ip.h> /* for ipv4 options. */
+ #include <net/inet_dscp.h>
++#include <linux/netfilter_bridge.h>
++#include <linux/if_vlan.h>
+ #include <net/netfilter/nf_tables.h>
+ #include <net/netfilter/nf_tables_core.h>
+ #include <net/netfilter/nf_conntrack_core.h>
+@@ -358,6 +360,55 @@
+ 	dir = CTINFO2DIR(ctinfo);
+ 	if (nft_flow_route(pkt, ct, &route, dir, priv->flowtable) < 0)
+ 		goto err_flow_route;
++
++	/*
++	 * Handle bridge flow offload - only for simple bridge scenarios.
++	 * Skip when VLANs are involved to preserve proper VLAN encapsulation
++	 * handling done by the kernel's dev_fill_forward_path().
++	 */
++	{
++		int physinif = nf_bridge_get_physinif(pkt->skb);
++		int physoutif = nf_bridge_get_physoutif(pkt->skb);
++
++		if (physinif && physoutif &&
++		    pkt->skb->dev && pkt->skb->dev->type == ARPHRD_ETHER &&
++		    !is_vlan_dev(pkt->skb->dev) &&
++		    route.tuple[dir].in.num_encaps == 0 &&
++		    route.tuple[!dir].in.num_encaps == 0) {
++			u8 pkt_h_source[ETH_ALEN];
++			u8 pkt_h_dest[ETH_ALEN];
++			bool macs_valid = false;
++
++			if (skb_mac_header_was_set(pkt->skb)) {
++				struct ethhdr *eth = eth_hdr(pkt->skb);
++				memcpy(pkt_h_source, eth->h_source, ETH_ALEN);
++				memcpy(pkt_h_dest, eth->h_dest, ETH_ALEN);
++				macs_valid = true;
++			} else if (skb_headroom(pkt->skb) >= ETH_HLEN) {
++				struct ethhdr *eth = (struct ethhdr *)(pkt->skb->data - ETH_HLEN);
++				memcpy(pkt_h_source, eth->h_source, ETH_ALEN);
++				memcpy(pkt_h_dest, eth->h_dest, ETH_ALEN);
++				macs_valid = true;
++			}
++
++			if (macs_valid && !is_zero_ether_addr(pkt_h_source) &&
++			    !is_zero_ether_addr(pkt_h_dest)) {
++				memcpy(route.tuple[dir].out.h_source, pkt_h_source, ETH_ALEN);
++				memcpy(route.tuple[dir].out.h_dest, pkt_h_dest, ETH_ALEN);
++				route.tuple[dir].xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
++				route.tuple[dir].out.ifindex = physoutif;
++				route.tuple[dir].out.hw_ifindex = physoutif;
++				route.tuple[dir].in.ifindex = physinif;
++
++				memcpy(route.tuple[!dir].out.h_source, pkt_h_dest, ETH_ALEN);
++				memcpy(route.tuple[!dir].out.h_dest, pkt_h_source, ETH_ALEN);
++				route.tuple[!dir].xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
++				route.tuple[!dir].out.ifindex = physinif;
++				route.tuple[!dir].out.hw_ifindex = physinif;
++				route.tuple[!dir].in.ifindex = physoutif;
++			}
++		}
++	}
+
+ 	flow = flow_offload_alloc(ct);
+ 	if (!flow)
+ 		goto err_flow_alloc;
