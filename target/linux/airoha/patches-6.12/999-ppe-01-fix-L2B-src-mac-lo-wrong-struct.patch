@@ -1,0 +1,74 @@
+From: Ryan Chen <rchen14b@gmail.com>
+Subject: [PATCH] net: airoha: fix L2 bridge offload src_mac_lo written to wrong struct
+
+Fix a bug in airoha_ppe_foe_entry_prepare() where for PPE_PKT_TYPE_BRIDGE,
+the src_mac_lo was incorrectly written to hwe->ipv4.l2.src_mac_lo instead
+of hwe->bridge.l2.src_mac_lo.
+
+The condition `type <= PPE_PKT_TYPE_IPV4_DSLITE` is true for BRIDGE type
+(type=2 <= 3), so it enters the branch and writes src_mac_lo to the IPv4
+struct. However, for bridge type, `l2` points to `hwe->bridge.l2.common`,
+so the src_mac_lo should be written to `hwe->bridge.l2.src_mac_lo`.
+
+This causes the hash computation in airoha_ppe_foe_get_entry_hash() for
+bridge flows to produce incorrect values, since it reads from
+hwe->bridge.l2.src_mac_lo which was never properly initialized.
+As a result, L2 bridge flows stay in UNBIND state and are never offloaded.
+
+The fix adds explicit handling for PPE_PKT_TYPE_BRIDGE to write src_mac_lo
+to the correct struct field.
+
+Also fix the debugfs code which had the same issue - reading L2 MAC info
+from the wrong struct for bridge packet types, causing zeroed MAC display.
+
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_ppe.c         | 10 ++++++++--
+ drivers/net/ethernet/airoha/airoha_ppe_debugfs.c | 10 +++++++---
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -359,7 +359,15 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+
+ 	l2->dest_mac_hi = get_unaligned_be32(data->eth.h_dest);
+ 	l2->dest_mac_lo = get_unaligned_be16(data->eth.h_dest + 4);
+-	if (type <= PPE_PKT_TYPE_IPV4_DSLITE) {
++	if (type == PPE_PKT_TYPE_BRIDGE) {
++		struct airoha_foe_mac_info *mac_info;
++
++		l2->src_mac_hi = get_unaligned_be32(data->eth.h_source);
++		hwe->bridge.l2.src_mac_lo =
++			get_unaligned_be16(data->eth.h_source + 4);
++		mac_info = (struct airoha_foe_mac_info *)l2;
++		mac_info->pppoe_id = data->pppoe.sid;
++	} else if (type <= PPE_PKT_TYPE_IPV4_DSLITE) {
+ 		struct airoha_foe_mac_info *mac_info;
+
+ 		l2->src_mac_hi = get_unaligned_be32(data->eth.h_source);
+--- a/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
+@@ -134,7 +134,11 @@ static int airoha_ppe_debugfs_foe_show(struct seq_file *m, void *private,
+ 			break;
+ 		}
+
+-		if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T) {
++		if (type == PPE_PKT_TYPE_BRIDGE) {
++			data = hwe->bridge.data;
++			ib2 = hwe->bridge.ib2;
++			l2 = &hwe->bridge.l2.common;
++		} else if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T) {
+ 			data = hwe->ipv6.data;
+ 			ib2 = hwe->ipv6.ib2;
+ 			l2 = &hwe->ipv6.l2;
+@@ -147,6 +151,10 @@ static int airoha_ppe_debugfs_foe_show(struct seq_file *m, void *private,
+ 		}
+
+ 		airoha_ppe_foe_entry_get_stats(ppe, i, &stats);
++		/* For bridge type, get src_mac_lo from the correct struct */
++		if (type == PPE_PKT_TYPE_BRIDGE)
++			*((__be16 *)&h_source[4]) =
++				cpu_to_be16(hwe->bridge.l2.src_mac_lo);
+
+ 		*((__be32 *)h_dest) = cpu_to_be32(l2->dest_mac_hi);
+ 		*((__be16 *)&h_dest[4]) = cpu_to_be16(l2->dest_mac_lo);
