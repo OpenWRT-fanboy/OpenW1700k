@@ -190,7 +190,7 @@ new file mode 100644
 index 0000000..63e49d7
 --- /dev/null
 +++ b/drivers/net/dsa/mt7530_nl.c
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,314 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (c) 2018 MediaTek Inc.
@@ -496,12 +496,15 @@ index 0000000..63e49d7
 +
 +	return 0;
 +}
++EXPORT_SYMBOL_GPL(mt7530_nl_init);
 +
-+void mt7530_nl_exit()
++void mt7530_nl_exit(void)
 +{
 +	sw_priv = NULL;
 +	genl_unregister_family(&mt7530_nl_family);
 +}
++EXPORT_SYMBOL_GPL(mt7530_nl_exit);
++
 diff --git a/drivers/net/dsa/mt7530_nl.h b/drivers/net/dsa/mt7530_nl.h
 new file mode 100644
 index 0000000..1093e83
