@@ -1,0 +1,12 @@
+diff --git a/mt7996/init.c b/mt7996/init.c
+index 80671f25..14e7837c 100644
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -524,6 +524,7 @@ mt7996_init_wiphy(struct ieee80211_hw *hw, struct mtk_wed_device *wed)
+ 	ieee80211_hw_set(hw, SUPPORTS_MULTI_BSSID);
+ 
+ 	hw->max_tx_fragments = 4;
++	wiphy->txq_memory_limit = 32 << 20; /* 32 MiB */
+ 
+ 	/* init led callbacks */
+ 	if (IS_ENABLED(CONFIG_MT76_LEDS)) {
