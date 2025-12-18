@@ -1,0 +1,40 @@
+From 304f4de07731eaf029bccea294a9cda52dcffd2a Mon Sep 17 00:00:00 2001
+From: fanboy <fanboy@openwrt.org>
+Date: Wed, 17 Dec 2025 19:36:23 -1000
+Subject: [PATCH] fix-declaration
+
+---
+ mtk-phy-lib.c | 2 +-
+ mtk.h         | 3 +++
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/phy/mediatek/mtk-phy-lib.c b/drivers/net/phy/mediatek/mtk-phy-lib.c
+index dfd0f4e439..180eb97106 100644
+--- a/drivers/net/phy/mediatek/mtk-phy-lib.c
++++ b/drivers/net/phy/mediatek/mtk-phy-lib.c
+@@ -36,7 +36,7 @@ static void __mtk_tr_read(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
+ 		*tr_high, *tr_low);
+ }
+ 
+-static void __mtk_tr_write(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
++void __mtk_tr_write(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
+ 			   u8 data_addr, u32 tr_data)
+ {
+ 	__phy_write(phydev, 0x11, tr_data & 0xffff);
+diff --git a/drivers/net/phy/mediatek/mtk.h b/drivers/net/phy/mediatek/mtk.h
+index 320f76ffa8..8ec1b4fb73 100644
+--- a/drivers/net/phy/mediatek/mtk.h
++++ b/drivers/net/phy/mediatek/mtk.h
+@@ -72,6 +72,9 @@ struct mtk_socphy_priv {
+ 	unsigned long		led_state;
+ };
+ 
++
++void __mtk_tr_write(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
++			   u8 data_addr, u32 tr_data);
+ void __mtk_tr_modify(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
+ 		     u8 data_addr, u32 mask, u32 set);
+ void mtk_tr_modify(struct phy_device *phydev, u8 ch_addr, u8 node_addr,
+-- 
+2.47.3
+
