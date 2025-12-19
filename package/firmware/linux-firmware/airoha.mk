@@ -20,8 +20,8 @@ Package/airoha-en7581-npu-firmware = $(call Package/firmware-default,Airoha EN75
 define Package/airoha-en7581-npu-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/airoha
 	$(CP) \
-		$(PKG_BUILD_DIR)/airoha/en7581_npu_data.bin \
-		$(PKG_BUILD_DIR)/airoha/en7581_npu_rv32.bin \
+		./files/en7581_npu_data.bin \
+		./files/en7581_npu_rv32.bin \
 		$(1)/lib/firmware/airoha
 endef
 
