@@ -1,0 +1,48 @@
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -136,7 +136,7 @@ static ssize_t mt7996_thermal_temp_store
+ 	     val > phy->throttle_temp[MT7996_MAX_TEMP_IDX] - 10) ||
+ 	    (i - 1 == MT7996_MAX_TEMP_IDX &&
+ 	     val - 10 < phy->throttle_temp[MT7996_CRIT_TEMP_IDX])) {
+-		dev_err(phy->dev->mt76.dev,
++		dev_warn(phy->dev->mt76.dev,
+ 			"temp1_max shall be 10 degrees higher than temp1_crit.");
+ 		mutex_unlock(&phy->dev->mt76.mutex);
+ 		return -EINVAL;
+@@ -1156,7 +1156,7 @@ static int mt7996_variant_fem_init(struc
+ 		adie_idx = (val & MT_PAD_GPIO_ADIE_SINGLE) ? 0 : 1;
+ 		adie_comb = u32_get_bits(val, MT_PAD_GPIO_ADIE_COMB_7992);
+ 	} else {
+-		adie_idx = 0;
++		adie_idx = 1;
+ 		adie_comb = u32_get_bits(val, MT_PAD_GPIO_ADIE_COMB);
+ 	}
+ 
+@@ -1182,6 +1182,12 @@ static int mt7996_variant_fem_init(struc
+ 	else
+ 		dev->var.fem = MT7996_FEM_EXT;
+ 
++	dev_err(dev->mt76.dev,
++		 "ADIE ID: 0x%04x, VER: 0x%04x, COMB: %d, FEM type: %s\n",
++		 adie_id, adie_ver, adie_comb,
++		 dev->var.fem == MT7996_FEM_INT ? "internal" :
++		 dev->var.fem == MT7996_FEM_MIX ? "mixed" : "external");
++
+ 	return 0;
+ }
+ 
+--- a/mt7996/eeprom.c
++++ b/mt7996/eeprom.c
+@@ -54,8 +54,11 @@ static char *mt7996_eeprom_name(struct m
+ 			return MT7996_EEPROM_DEFAULT_233;
+ 		case MT7996_VAR_TYPE_444:
+ 		default:
+-			if (dev->var.fem == MT7996_FEM_INT)
++			if (dev->var.fem == MT7996_FEM_INT) {
++                dev_warn(dev->mt76.dev, "default eeprom path: %s\n", MT7996_EEPROM_DEFAULT_INT);
+ 				return MT7996_EEPROM_DEFAULT_INT;
++			}
++			dev_warn(dev->mt76.dev, "default eeprom path: %s\n", MT7996_EEPROM_DEFAULT);
+ 			return MT7996_EEPROM_DEFAULT;
+ 		}
+ 	}
