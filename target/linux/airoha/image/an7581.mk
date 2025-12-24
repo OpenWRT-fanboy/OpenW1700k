@@ -104,3 +104,16 @@ define Device/gemtek_w1700k-ubi
   SOC := an7581
 endef
 TARGET_DEVICES += gemtek_w1700k-ubi
+
+define Device/gemtek_w1701k
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := Gemtek
+  DEVICE_MODEL := W1701K
+  DEVICE_ALT0_VENDOR := Quantum Fiber
+  DEVICE_ALT0_MODEL := W1701K
+  DEVICE_PACKAGES :=  kmod-i2c-an7581 kmod-hwmon-nct7802 \
+			kmod-mt7996-firmware kmod-phy-airoha-en8811h
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SOC := an7581
+endef
+TARGET_DEVICES += gemtek_w1701k
