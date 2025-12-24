@@ -1,0 +1,13 @@
+. /lib/functions/caldata.sh
+. /lib/functions/system.sh
+
+do_extract_caldata() {
+	case $(board_name) in
+	gemtek,w1701k)
+		FIRMWARE=mediatek/mt7996/mt7996_eeprom.bin
+		caldata_extract "factory" 0x4000 0x1E00
+		;;
+	esac
+}
+
+boot_hook_add preinit_main do_extract_caldata
