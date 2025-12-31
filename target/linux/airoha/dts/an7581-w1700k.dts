@@ -250,6 +250,9 @@
 };
 
 &pcie0 {
+	wifi-reset-gpios = <&en7581_pinctrl 13 GPIO_ACTIVE_LOW>;
+	wifi-reset-msleep = <100>;
+	wifi-deassert-msleep = <500>;	
 	status = "okay";
 
 	pinctrl-names = "default";
