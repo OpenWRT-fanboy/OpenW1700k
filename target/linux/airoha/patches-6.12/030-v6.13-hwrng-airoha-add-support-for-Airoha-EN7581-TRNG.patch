@@ -89,7 +89,7 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#define   SW_STARTUP_INITR_EN		BIT(1)
 +#define   RST_STARTUP_INITR_EN		BIT(0)
 +/* Notice that Health Test are done only out of Reset and with RNG_EN */
-+#define TRNG_HEALTH_TEST_STATUS		0x824
++#define TRNG_HEALTH_TEST_STATUS		0x838
 +#define   CONTINUOUS_HEALTH_AP_TEST_FAIL BIT(23)
 +#define   CONTINUOUS_HEALTH_RC_TEST_FAIL BIT(22)
 +#define   SW_STARTUP_TEST_DONE		BIT(21)
@@ -98,9 +98,9 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#define   RST_STARTUP_TEST_DONE		BIT(18)
 +#define   RST_STARTUP_AP_TEST_FAIL	BIT(17)
 +#define   RST_STARTUP_RC_TEST_FAIL	BIT(16)
-+#define   RAW_DATA_VALID		BIT(7)
++#define   RAW_DATA_VALID		BIT(31)
 +
-+#define TRNG_RAW_DATA_OUT		0x828
++#define TRNG_RAW_DATA_OUT		0x83C
 +
 +#define TRNG_CNT_TRANS_VALID		0x80
 +#define BUSY_LOOP_SLEEP			10
@@ -262,10 +262,10 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +	val |= RST_STARTUP_INITR_EN;
 +	writel(val, trng->base + TRNG_INTR_EN);
 +
-+	/* Set output to raw data */
++	/* Set output to raw data
 +	val = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
 +	val |= RAW_DATA_EN;
-+	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN);
++	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN); */
 +
 +	/* Put it in SW Reset */
 +	writel(SW_RST, trng->base + TRNG_HEALTH_TEST_SW_RST);
