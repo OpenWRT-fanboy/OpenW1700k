@@ -10,7 +10,7 @@ Signed-off-by: Balázs Triszka <info@balika011.hu>
 
 ---
  drivers/net/phy/realtek/realtek_main.c | 99 +++++++++++++++-----------
- 1 file changed, 58 insertions(+), 41 deletions(-)
+ 1 file changed, 57 insertions(+), 40 deletions(-)
 
 --- a/drivers/net/phy/realtek/realtek_main.c
 +++ b/drivers/net/phy/realtek/realtek_main.c
@@ -61,15 +61,6 @@ Signed-off-by: Balázs Triszka <info@balika011.hu>
  		ret = phy_modify_paged(phydev, RTL8211FVD_CLKOUT_PAGE,
  				       RTL8211FVD_CLKOUT_REG,
  				       RTL8211FVD_CLKOUT_EN, 0);
-@@ -696,7 +713,7 @@ static int rtl8211f_config_aldps(struct
- static int rtl8211f_config_phy_eee(struct phy_device *phydev)
- {
- 	/* RTL8211FVD has no PHYCR2 register */
--	if (phydev->drv->phy_id == RTL_8211FVD_PHYID)
-+	if (phydev->drv->phy_id == PHYID_RTL8211FVD)
- 		return 0;
- 
- 	/* Disable PHY-mode EEE so LPI is passed to the MAC */
 @@ -1240,7 +1257,7 @@ static int rtl822x_write_mmd(struct phy_
  static int rtl822x_probe(struct phy_device *phydev)
  {
