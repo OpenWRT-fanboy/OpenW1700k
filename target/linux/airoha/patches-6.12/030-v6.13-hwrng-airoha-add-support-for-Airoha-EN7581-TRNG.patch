@@ -60,7 +60,7 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
  obj-$(CONFIG_HW_RANDOM_GEODE) += geode-rng.o
 --- /dev/null
 +++ b/drivers/char/hw_random/airoha-trng.c
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,329 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/* Copyright (C) 2024 Christian Marangi */
 +
@@ -73,7 +73,10 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#include <linux/interrupt.h>
 +#include <linux/io.h>
 +#include <linux/iopoll.h>
++#include <linux/mfd/syscon.h>
++#include <linux/of.h>
 +#include <linux/platform_device.h>
++#include <linux/regmap.h>
 +
 +#define TRNG_IP_RDY			0x800
 +#define   CNT_TRANS			GENMASK(15, 8)
@@ -81,6 +84,7 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#define TRNG_NS_SEK_AND_DAT_EN		0x804
 +#define	  RNG_EN			BIT(31) /* referenced as ring_en */
 +#define	  RAW_DATA_EN			BIT(16)
++#define	  RNG_OSC_EN			BIT(1)
 +#define TRNG_HEALTH_TEST_SW_RST		0x808
 +#define   SW_RST			BIT(0) /* Active High */
 +#define TRNG_INTR_EN			0x818
@@ -89,7 +93,7 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#define   SW_STARTUP_INITR_EN		BIT(1)
 +#define   RST_STARTUP_INITR_EN		BIT(0)
 +/* Notice that Health Test are done only out of Reset and with RNG_EN */
-+#define TRNG_HEALTH_TEST_STATUS		0x838
++#define TRNG_HEALTH_TEST_STATUS		0x824
 +#define   CONTINUOUS_HEALTH_AP_TEST_FAIL BIT(23)
 +#define   CONTINUOUS_HEALTH_RC_TEST_FAIL BIT(22)
 +#define   SW_STARTUP_TEST_DONE		BIT(21)
@@ -98,13 +102,23 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +#define   RST_STARTUP_TEST_DONE		BIT(18)
 +#define   RST_STARTUP_AP_TEST_FAIL	BIT(17)
 +#define   RST_STARTUP_RC_TEST_FAIL	BIT(16)
-+#define   RAW_DATA_VALID		BIT(31)
++#define   RAW_DATA_VALID		BIT(7)
 +
-+#define TRNG_RAW_DATA_OUT		0x83C
++#define TRNG_RAW_DATA_OUT		0x828
++#define TRNG_TEST_MODE_SHA_DONE		0x838
++#define   DRBG_DATA_RDY			BIT(31)
++#define TRNG_DRBG_DATA_OUT		0x83C
 +
 +#define TRNG_CNT_TRANS_VALID		0x80
 +#define BUSY_LOOP_SLEEP			10
 +#define BUSY_LOOP_TIMEOUT		(BUSY_LOOP_SLEEP * 10000)
++
++#define REG_SCU_BUS_CLK_GAT		0x1e4
++#define REG_SCU_PER_CLK_GAT_1		0x1ec
++#define REG_SCU_PER_CLK_GAT_2		0x200
++#define   SCU_TRNG_BUS_EN		BIT(3)
++#define   SCU_TRNG_PER1_EN		BIT(21)
++#define   SCU_TRNG_PER2_EN		BIT(0)
 +
 +struct airoha_trng {
 +	void __iomem *base;
@@ -112,6 +126,9 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +	struct device *dev;
 +
 +	struct completion rng_op_done;
++	struct regmap *scu;
++	bool use_drbg;
++	phys_addr_t base_phys;
 +};
 +
 +static int airoha_trng_irq_mask(struct airoha_trng *trng)
@@ -139,12 +156,46 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +static int airoha_trng_init(struct hwrng *rng)
 +{
 +	struct airoha_trng *trng = container_of(rng, struct airoha_trng, rng);
++	u32 val, old, new;
 +	int ret;
-+	u32 val;
 +
-+	val = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
-+	val |= RNG_EN;
-+	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN);
++	old = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
++	new = old | RNG_EN | RNG_OSC_EN;
++	dev_info(trng->dev, "TRNG init [0x%llx]: old=0x%08x, new=0x%08x (enabling RNG and OSC)\n",
++		 (unsigned long long)trng->base_phys + TRNG_NS_SEK_AND_DAT_EN, old, new);
++	writel(new, trng->base + TRNG_NS_SEK_AND_DAT_EN);
++
++	if (trng->scu) {
++		ret = regmap_read(trng->scu, REG_SCU_BUS_CLK_GAT, &old);
++		if (ret) {
++			dev_err(trng->dev, "failed to read SCU BUS clock: %d\n", ret);
++		} else {
++			new = old | SCU_TRNG_BUS_EN;
++			dev_info(trng->dev, "SCU init [offset 0x%03x]: old=0x%08x, new=0x%08x (enabling BUS clock)\n",
++				 REG_SCU_BUS_CLK_GAT, old, new);
++		}
++		regmap_set_bits(trng->scu, REG_SCU_BUS_CLK_GAT, SCU_TRNG_BUS_EN);
++
++		ret = regmap_read(trng->scu, REG_SCU_PER_CLK_GAT_1, &old);
++		if (ret) {
++			dev_err(trng->dev, "failed to read SCU PER1 clock: %d\n", ret);
++		} else {
++			new = old | SCU_TRNG_PER1_EN;
++			dev_info(trng->dev, "SCU init [offset 0x%03x]: old=0x%08x, new=0x%08x (enabling PER1 clock)\n",
++				 REG_SCU_PER_CLK_GAT_1, old, new);
++		}
++		regmap_set_bits(trng->scu, REG_SCU_PER_CLK_GAT_1, SCU_TRNG_PER1_EN);
++
++		ret = regmap_read(trng->scu, REG_SCU_PER_CLK_GAT_2, &old);
++		if (ret) {
++			dev_err(trng->dev, "failed to read SCU PER2 clock: %d\n", ret);
++		} else {
++			new = old | SCU_TRNG_PER2_EN;
++			dev_info(trng->dev, "SCU init [offset 0x%03x]: old=0x%08x, new=0x%08x (enabling PER2 clock)\n",
++				 REG_SCU_PER_CLK_GAT_2, old, new);
++		}
++		regmap_set_bits(trng->scu, REG_SCU_PER_CLK_GAT_2, SCU_TRNG_PER2_EN);
++	}
 +
 +	/* Set out of SW Reset */
 +	airoha_trng_irq_unmask(trng);
@@ -205,14 +256,26 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +	u32 status;
 +	int ret;
 +
-+	ret = readl_poll_timeout(trng->base + TRNG_HEALTH_TEST_STATUS, status,
-+				 status & RAW_DATA_VALID, 10, 1000);
++	u32 status_reg, data_reg, rdy_mask;
++
++	if (trng->use_drbg) {
++		status_reg = TRNG_TEST_MODE_SHA_DONE;
++		data_reg = TRNG_DRBG_DATA_OUT;
++		rdy_mask = DRBG_DATA_RDY;
++	} else {
++		status_reg = TRNG_HEALTH_TEST_STATUS;
++		data_reg = TRNG_RAW_DATA_OUT;
++		rdy_mask = RAW_DATA_VALID;
++	}
++
++	ret = readl_poll_timeout(trng->base + status_reg, status,
++				 status & rdy_mask, 10, 10000);
 +	if (ret < 0) {
-+		dev_err(trng->dev, "Timeout waiting for TRNG RAW Data valid\n");
++		dev_err(trng->dev, "Timeout waiting for TRNG data\n");
 +		return ret;
 +	}
 +
-+	*data = readl(trng->base + TRNG_RAW_DATA_OUT);
++	*data = readl(trng->base + data_reg);
 +
 +	return 4;
 +}
@@ -232,20 +295,35 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +{
 +	struct device *dev = &pdev->dev;
 +	struct airoha_trng *trng;
++	struct resource *res;
 +	int irq, ret;
-+	u32 val;
++	u32 val, old, new;
 +
 +	trng = devm_kzalloc(dev, sizeof(*trng), GFP_KERNEL);
 +	if (!trng)
 +		return -ENOMEM;
 +
-+	trng->base = devm_platform_ioremap_resource(pdev, 0);
++	trng->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 +	if (IS_ERR(trng->base))
 +		return PTR_ERR(trng->base);
++
++	trng->base_phys = res->start;
 +
 +	irq = platform_get_irq(pdev, 0);
 +	if (irq < 0)
 +		return irq;
++
++	trng->scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
++	if (IS_ERR(trng->scu)) {
++		dev_warn(dev, "failed to get scu regmap: %ld. relying on bootloader\n",
++			 PTR_ERR(trng->scu));
++		trng->scu = NULL;
++	} else {
++		dev_info(dev, "scu regmap found, controlling clocks manually\n");
++	}
++
++	trng->use_drbg = !of_property_read_bool(dev->of_node, "airoha,raw-mode");
++	dev_info(dev, "TRNG mode: %s\n", trng->use_drbg ? "DRBG" : "RAW");
 +
 +	airoha_trng_irq_mask(trng);
 +	ret = devm_request_irq(&pdev->dev, irq, airoha_trng_irq, 0,
@@ -262,10 +340,17 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +	val |= RST_STARTUP_INITR_EN;
 +	writel(val, trng->base + TRNG_INTR_EN);
 +
-+	/* Set output to raw data
-+	val = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
-+	val |= RAW_DATA_EN;
-+	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN); */
++	/* Set output mode based on DT property (default: DRBG) */
++	old = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
++	if (trng->use_drbg)
++		new = old & ~RAW_DATA_EN;
++	else
++		new = old | RAW_DATA_EN;
++
++	dev_info(dev, "TRNG mode setup [0x%llx]: old=0x%08x, new=0x%08x (setting %s mode)\n",
++		 (unsigned long long)trng->base_phys + TRNG_NS_SEK_AND_DAT_EN,
++		 old, new, trng->use_drbg ? "DRBG" : "RAW");
++	writel(new, trng->base + TRNG_NS_SEK_AND_DAT_EN);
 +
 +	/* Put it in SW Reset */
 +	writel(SW_RST, trng->base + TRNG_HEALTH_TEST_SW_RST);
@@ -275,6 +360,7 @@ Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
 +	trng->rng.init = airoha_trng_init;
 +	trng->rng.cleanup = airoha_trng_cleanup;
 +	trng->rng.read = airoha_trng_read;
++	trng->rng.quality = trng->use_drbg ? 900 : 0;
 +
 +	ret = devm_hwrng_register(dev, &trng->rng);
 +	if (ret) {

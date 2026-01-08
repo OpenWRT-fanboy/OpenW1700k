@@ -522,10 +522,11 @@
 			#reset-cells = <1>;
 		};
 
-		rng@1faa1000 {
+		rng: rng@1faa1000 {
 			compatible = "airoha,en7581-trng";
 			reg = <0x0 0x1faa1000 0x0 0xc04>;
 			interrupts = <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>;
+			airoha,scu = <&chip_scu>;
 		};
 
 		usb0: usb@1fab0000 {
