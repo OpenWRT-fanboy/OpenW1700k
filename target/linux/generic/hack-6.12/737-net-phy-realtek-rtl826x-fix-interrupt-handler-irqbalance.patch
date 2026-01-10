@@ -1,0 +1,125 @@
+From: Ryan Chen <rchen14b@gmail.com>
+Date: Sun, 12 Jan 2026 00:00:00 +0000
+Subject: [PATCH] net: phy: realtek: rtl826x: fix interrupt init order to match
+ OEM firmware
+
+The RTL826x interrupt handling causes "nobody cared" errors because
+the initialization order differs from OEM firmware.
+
+OEM rtk_phylib_826xb_intr_init() does:
+1. Disable IMR (0xe1, 0xe3)
+2. Set source (0xe4, 0xe0)
+3. Write INER (0xa424) = 0x10 (LINK_STATUS only) BEFORE other config
+4. Configure interrupt sources (0xa442, 0xa448)
+5. Configure interrupt routing (0x1a0, 0x19d, 0x1a1, 0x19f bit 11)
+6. Clear pending interrupts via rtk_phylib_826xb_intr_read_clear()
+7. Enable interrupt output (0xe1 bit 0)
+
+OpenWrt was writing INER after the routing config, which may cause
+an interrupt to fire before the system is fully configured.
+
+Also fix:
+- Use LINK_STATUS only (0x10) instead of LINK_STATUS|PME (0x90)
+  to match OEM firmware behavior
+- Always return IRQ_HANDLED and clear interrupts even on MDIO
+  failure to prevent "nobody cared" from disabling the IRQ
+- Remove PME handling since we don't enable PME interrupts
+
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+---
+ drivers/net/phy/realtek/realtek_main.c | 88 ++++++++++++++++++++------
+ 1 file changed, 68 insertions(+), 20 deletions(-)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -2424,44 +2424,72 @@
+ 	if (ret < 0)
+ 		return ret;
+
+-	/* init common link change & WOL*/
+-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL826X_VND2_INER, RTL826X_VND2_INER_LINK_STATUS | RTL826X_VND2_INER_PME);
++	/*
++	 * OEM rtk_phylib_826xb_intr_init() sequence:
++	 * Write INER BEFORE configuring interrupt routing registers.
++	 * Use LINK_STATUS only (0x10), not LINK_STATUS|PME (0x90).
++	 */
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL826X_VND2_INER, RTL826X_VND2_INER_LINK_STATUS);
+ 	if (ret < 0)
+ 		return ret;
+
+-	/* clear status */
+-	phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x2DC, GENMASK(15, 0), 0xFF);
++	/* Configure interrupt sources (OEM a442/a448) */
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, 0xa442, GENMASK(15, 0), 0x1);
++	if (ret < 0)
++		return ret;
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, 0xa448, BIT(7), BIT(7));
++	if (ret < 0)
++		return ret;
+
++	/* Configure interrupt routing (OEM 0x1a0/19d/1a1/19f bit 11) */
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x1a0, BIT(11), BIT(11));
++	if (ret < 0)
++		return ret;
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x19d, BIT(11), BIT(11));
++	if (ret < 0)
++		return ret;
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x1a1, BIT(11), BIT(11));
++	if (ret < 0)
++		return ret;
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x19f, BIT(11), BIT(11));
++	if (ret < 0)
++		return ret;
++
++	/* Clear pending interrupts - OEM rtk_phylib_826xb_intr_read_clear() */
++	phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL826X_VND2_INSR);
++	phy_read_mmd(phydev, MDIO_MMD_VEND2, 0xe2);
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xe2, 0xff);
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x2dc, 0xff);
++
++	/* Enable interrupt output */
+ 	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0xE1, GENMASK(0, 0),
+ 			      phydev->interrupts == PHY_INTERRUPT_ENABLED);
+ }
+
+ static irqreturn_t rtl826x_handle_intr(struct phy_device *phydev)
+ {
+-	u32 data;
++	int data;
+
++	/* Read interrupt status */
+ 	data = phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL826X_VND2_INSR);
+-	if (data < 0)
+-		return IRQ_NONE;
++	if (data < 0) {
++		/* MDIO failure - still clear and return handled to avoid IRQ storm */
++		phy_read_mmd(phydev, MDIO_MMD_VEND2, 0xe2);
++		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xe2, 0xff);
++		phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x2dc, 0xff);
++		return IRQ_HANDLED;
++	}
+
+-	if (phy_modify_mmd(phydev, MDIO_MMD_VEND1, 0x2DC, GENMASK(15, 0), 0xFF) < 0)
+-		return IRQ_NONE;
++	/* Clear interrupts - OEM rtk_phylib_826xb_intr_read_clear() sequence */
++	phy_read_mmd(phydev, MDIO_MMD_VEND2, 0xe2);
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xe2, 0xff);
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x2dc, 0xff);
+
+ 	if (data & RTL826X_VND2_INER_LINK_STATUS) {
+ 		phydev_dbg(phydev, "RTK_PHY_INTR_LINK_CHANGE\n");
+ 		phy_mac_interrupt(phydev);
+ 	}
+
+-	if (data & RTL826X_VND2_INER_PME) {
+-		phydev_dbg(phydev, "RTK_PHY_INTR_WOL\n");
+-
+-		if (phy_modify_mmd(phydev, MDIO_MMD_VEND2, 0xD8A2, BIT(15), 0) < 0)
+-			return IRQ_NONE;
+-
+-		if (phy_modify_mmd(phydev, MDIO_MMD_VEND2, 0xD8A2, BIT(15), 1 << 15) < 0)
+-			return IRQ_NONE;
+-	}
+-
+ 	return IRQ_HANDLED;
+ }
