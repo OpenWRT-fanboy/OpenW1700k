@@ -1,0 +1,12 @@
+--- a/drivers/net/phy/mediatek/mtk-ge-soc.c
++++ b/drivers/net/phy/mediatek/mtk-ge-soc.c
+@@ -1425,9 +1425,6 @@
+ 
+ 	/* Toggle pinctrl to enable PHY LED */
+ 	pinctrl = devm_pinctrl_get_select(&phydev->mdio.dev, "gbe-led");
+-	if (IS_ERR(pinctrl))
+-		dev_err(&phydev->mdio.bus->dev,
+-			"Failed to setup PHY LED pinctrl\n");
+ 
+ 	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
