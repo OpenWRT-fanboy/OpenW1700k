@@ -1,0 +1,69 @@
+From: OpenWrt <noreply@openwrt.org>
+Subject: [PATCH] dropbear: silence per-connection session logs
+
+Suppress the three per-connection log lines emitted for every SSH
+session so router logs are not spammed by routine administrative logins:
+
+  * "Child connection from ...:port"
+  * "Auth succeeded with blank password for 'root' from ..."
+  * "Exit (root) from <...>: Exited normally"
+
+The child-connection messages carry no diagnostic value (a session start
+and end were already paired), and the blank-password success is
+intentionally permitted by the allow-blank-root-password config.
+
+Removing the fw log for the normal close path preserves the other exit
+messages (idle timeout, disconnect received, signal exit, etc.).
+
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -105,11 +105,6 @@
+ 	if (svr_opts.reexec_childpipe < 0) {
+ 		/* In case our inetd was lax in logging source addresses */
+ 		get_socket_address(0, NULL, NULL, &host, &port, 0);
+-			if (strchr(host, ':') != NULL) {
+-				dropbear_log(LOG_INFO, "Child connection from [%s]:%s", host, port);
+-			} else {
+-				dropbear_log(LOG_INFO, "Child connection from %s:%s", host, port);
+-			}
+ 
+ 		m_free(host);
+ 		m_free(port);
+@@ -331,11 +326,6 @@
+ 
+ 				/* child */
+ 				getaddrstring(&remoteaddr, NULL, &remote_port, 0);
+-				if (strchr(remote_host, ':') != NULL) {
+-					dropbear_log(LOG_INFO, "Child connection from [%s]:%s", remote_host, remote_port);
+-				} else {
+-					dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
+-				}
+ 
+ 				m_free(remote_host);
+ 				m_free(remote_port);
+--- a/src/svr-auth.c
++++ b/src/svr-auth.c
+@@ -127,10 +127,6 @@
+ 				&& !(svr_opts.norootpass && ses.authstate.pw_uid == 0) 
+ 				&& ses.authstate.pw_passwd[0] == '\0') 
+ 		{
+-			dropbear_log(LOG_NOTICE, 
+-					"Auth succeeded with blank password for '%s' from %s",
+-					ses.authstate.pw_name,
+-					svr_ses.addrstring);
+ 			send_msg_userauth_success();
+ 			goto out;
+ 		}
+--- a/src/svr-session.c
++++ b/src/svr-session.c
+@@ -264,7 +264,9 @@
+ 		add_delay = 1;
+ 	}
+ 
+-	dropbear_log(LOG_INFO, "%s", fullmsg);
++	if (strcmp(format, "Exited normally") != 0) {
++		dropbear_log(LOG_INFO, "%s", fullmsg);
++	}
+ 
+ 	/* To make it harder for attackers, introduce a delay to keep an
+ 	 * unauthenticated session open a bit longer, thus blocking a connection
