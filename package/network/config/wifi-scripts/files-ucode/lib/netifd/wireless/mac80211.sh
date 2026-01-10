@@ -100,10 +100,14 @@ function setup_phy(phy, config, data) {
 	else
 		config.txpower = 'auto';
 
+	let antenna_file = `/var/run/wifi-antenna-${phy}`;
+	let antenna_config = `${config.txantenna} ${config.rxantenna}`;
+
 	log(`Configuring '${phy}' distance: ${config.distance}`);
-	if (antenna_changed) {
+	if (antenna_changed && fs.readfile(antenna_file) != antenna_config) {
 		log(`Setting antenna for '${phy}' txantenna: ${config.txantenna}, rxantenna: ${config.rxantenna}`);
-		system(`iw phy ${phy} set antenna ${config.txantenna} ${config.rxantenna}`);
+		if (!system(`iw phy ${phy} set antenna ${antenna_config}`))
+			fs.writefile(antenna_file, antenna_config);
 	}
 	system(`iw phy ${phy} set distance ${config.distance}`);
 	system(`iw phy ${phy} set txpower ${config.txpower}`);
