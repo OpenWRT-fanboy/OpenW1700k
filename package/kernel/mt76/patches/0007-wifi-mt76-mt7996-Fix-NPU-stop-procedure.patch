@@ -1,0 +1,96 @@
+From b7216b06644c39b37fc0adf030369f6e89f08216 Mon Sep 17 00:00:00 2001
+Message-ID: <b7216b06644c39b37fc0adf030369f6e89f08216.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 18:42:20 +0100
+Subject: [PATCH 07/23] wifi: mt76: mt7996: Fix NPU stop procedure
+
+Move mt7996_npu_hw_stop routine before disabling rx NAPIs in order to
+fix NPU stop procedure used during device L1 SER recovery.
+Add missing usleep_range in mt7996_npu_hw_stop().
+
+Fixes: 377aa17d2aedc ("wifi: mt76: mt7996: Add NPU offload support to MT7996 driver")
+Tested-by: Kang Yang <kang.yang@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/mac.c |  3 +--
+ mt7996/npu.c | 23 ++++++++++++++---------
+ 2 files changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index 037dbe60..f80ee406 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -2542,6 +2542,7 @@ void mt7996_mac_reset_work(struct work_struct *work)
+ 	if (mtk_wed_device_active(&dev->mt76.mmio.wed))
+ 		mtk_wed_device_stop(&dev->mt76.mmio.wed);
+ 
++	mt7996_npu_hw_stop(dev);
+ 	ieee80211_stop_queues(mt76_hw(dev));
+ 
+ 	set_bit(MT76_RESET, &dev->mphy.state);
+@@ -2568,8 +2569,6 @@ void mt7996_mac_reset_work(struct work_struct *work)
+ 
+ 	mutex_lock(&dev->mt76.mutex);
+ 
+-	mt7996_npu_hw_stop(dev);
+-
+ 	mt76_wr(dev, MT_MCU_INT_EVENT, MT_MCU_INT_EVENT_DMA_STOPPED);
+ 
+ 	if (mt7996_wait_reset_state(dev, MT_MCU_CMD_RESET_DONE)) {
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index 29bb735d..067ef647 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -320,33 +320,38 @@ unlock:
+ int mt7996_npu_hw_stop(struct mt7996_dev *dev)
+ {
+ 	struct airoha_npu *npu;
+-	int i, err;
++	int i, err = 0;
+ 	u32 info;
+ 
++	mutex_lock(&dev->mt76.mutex);
++
+ 	npu = rcu_dereference_protected(dev->mt76.mmio.npu, &dev->mt76.mutex);
+ 	if (!npu)
+-		return 0;
++		goto unlock;
+ 
+ 	err = mt76_npu_send_msg(npu, 4, WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+ 				0, GFP_KERNEL);
+ 	if (err)
+-		return err;
++		goto unlock;
+ 
+ 	for (i = 0; i < 10; i++) {
+ 		err = mt76_npu_get_msg(npu, 3, WLAN_FUNC_GET_WAIT_NPU_INFO,
+ 				       &info, GFP_KERNEL);
+-		if (err)
+-			continue;
++		if (!err && !info)
++			break;
+ 
+-		if (info) {
+-			err = -ETIMEDOUT;
+-			continue;
+-		}
++		err = -ETIMEDOUT;
++		usleep_range(10000, 15000);
+ 	}
+ 
+ 	if (!err)
+ 		err = mt76_npu_send_msg(npu, 6,
+ 					WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
+ 					0, GFP_KERNEL);
++	else
++		dev_err(dev->mt76.dev, "npu stop failed\n");
++unlock:
++	mutex_unlock(&dev->mt76.mutex);
++
+ 	return err;
+ }
+-- 
+2.52.0
+

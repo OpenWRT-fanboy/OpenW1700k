@@ -1,0 +1,43 @@
+From 642d80fde709565ddf36c2a6e18c8e992f28b9b6 Mon Sep 17 00:00:00 2001
+Message-ID: <642d80fde709565ddf36c2a6e18c8e992f28b9b6.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 19:03:42 +0100
+Subject: [PATCH 13/23] wifi: mt76: mt7996: Rename mt7996_npu_rxd_init() in
+ mt7992_npu_rxd_init()
+
+This is a preliminary patch to enable NPU offload for MT7996 (Eagle)
+chipset.
+
+Tested-by: Kang Yang <kang.yang@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/npu.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/mt7996/npu.c b/mt7996/npu.c
+index d79f8dfb..a9569278 100644
+--- a/mt7996/npu.c
++++ b/mt7996/npu.c
+@@ -122,7 +122,7 @@ static int mt7996_npu_offload_init(struct mt7996_dev *dev,
+ 	return 0;
+ }
+ 
+-static int mt7996_npu_rxd_init(struct mt7996_dev *dev, struct airoha_npu *npu)
++static int mt7992_npu_rxd_init(struct mt7996_dev *dev, struct airoha_npu *npu)
+ {
+ 	u32 val;
+ 	int err;
+@@ -304,7 +304,7 @@ int mt7996_npu_hw_init(struct mt7996_dev *dev)
+ 	if (err)
+ 		goto unlock;
+ 
+-	err = mt7996_npu_rxd_init(dev, npu);
++	err = mt7992_npu_rxd_init(dev, npu);
+ 	if (err)
+ 		goto unlock;
+ 
+-- 
+2.52.0
+

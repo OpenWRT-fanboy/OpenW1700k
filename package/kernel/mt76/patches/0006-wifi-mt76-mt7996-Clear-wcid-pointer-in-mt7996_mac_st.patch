@@ -1,0 +1,33 @@
+From 493a186b719747d2c9a5df48765c4ef74ff5cc9a Mon Sep 17 00:00:00 2001
+Message-ID: <493a186b719747d2c9a5df48765c4ef74ff5cc9a.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 5 Dec 2025 11:08:46 +0100
+Subject: [PATCH 06/23] wifi: mt76: mt7996: Clear wcid pointer in
+ mt7996_mac_sta_deinit_link()
+
+Clear WCID pointer removing the sta link in mt7996_mac_sta_deinit_link
+routine.
+
+Fixes: dd82a9e02c054 ("wifi: mt76: mt7996: Rely on mt7996_sta_link in sta_add/sta_remove callbacks")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/main.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mt7996/main.c b/mt7996/main.c
+index b518fc20..2f5bf87b 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -1026,6 +1026,7 @@ void mt7996_mac_sta_deinit_link(struct mt7996_dev *dev,
+ 		list_del_init(&msta_link->rc_list);
+ 	spin_unlock_bh(&dev->mt76.sta_poll_lock);
+ 
++	rcu_assign_pointer(dev->mt76.wcid[msta_link->wcid.idx], NULL);
+ 	mt76_wcid_cleanup(&dev->mt76, &msta_link->wcid);
+ 	mt76_wcid_mask_clear(dev->mt76.wcid_mask, msta_link->wcid.idx);
+ }
+-- 
+2.52.0
+

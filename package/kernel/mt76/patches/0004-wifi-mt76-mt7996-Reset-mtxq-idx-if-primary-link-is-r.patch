@@ -1,0 +1,52 @@
+From 0cb24f433f1fd34d2bb95f1620886e2c7d63e651 Mon Sep 17 00:00:00 2001
+Message-ID: <0cb24f433f1fd34d2bb95f1620886e2c7d63e651.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 4 Dec 2025 09:57:44 +0100
+Subject: [PATCH 04/23] wifi: mt76: mt7996: Reset mtxq->idx if primary link is
+ removed in mt7996_vif_link_remove()
+
+Reset WCID index in mt76_txq struct if primary link is removed in
+mt7996_vif_link_remove routine.
+
+Fixes: a3316d2fc669f ("wifi: mt76: mt7996: set vif default link_id adding/removing vif links")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/main.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/mt7996/main.c b/mt7996/main.c
+index 317e131b..c1800a8a 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -409,12 +409,23 @@ void mt7996_vif_link_remove(struct mt76_phy *mphy, struct ieee80211_vif *vif,
+ 		struct ieee80211_bss_conf *iter;
+ 		unsigned int link_id;
+ 
++		/* Primary link will be removed, look for a new one */
+ 		mvif->mt76.deflink_id = IEEE80211_LINK_UNSPECIFIED;
+ 		for_each_vif_active_link(vif, iter, link_id) {
+-			if (link_id != IEEE80211_LINK_UNSPECIFIED) {
+-				mvif->mt76.deflink_id = link_id;
+-				break;
++			struct mt7996_vif_link *link;
++
++			link = mt7996_vif_link(dev, vif, link_id);
++			if (!link)
++				continue;
++
++			if (vif->txq) {
++				struct mt76_txq *mtxq;
++
++				mtxq = (struct mt76_txq *)vif->txq->drv_priv;
++				mtxq->wcid = link->msta_link.wcid.idx;
+ 			}
++			mvif->mt76.deflink_id = link_id;
++			break;
+ 		}
+ 	}
+ 
+-- 
+2.52.0
+

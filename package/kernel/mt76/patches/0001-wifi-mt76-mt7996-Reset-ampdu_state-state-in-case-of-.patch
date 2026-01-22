@@ -1,0 +1,35 @@
+From 334773c25f0c65bde48e679b56b3348c045aaaf3 Mon Sep 17 00:00:00 2001
+Message-ID: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sun, 14 Dec 2025 10:45:02 +0100
+Subject: [PATCH 01/23] wifi: mt76: mt7996: Reset ampdu_state state in case of
+ failure in mt7996_tx_check_aggr()
+
+Reset the ampdu_state configured state if ieee80211_start_tx_ba_session
+routine fails in mt7996_tx_check_aggr()
+
+Fixes: 98686cd21624c ("wifi: mt76: mt7996: add driver for MediaTek Wi-Fi 7 (802.11be) devices")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/mac.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/mt7996/mac.c b/mt7996/mac.c
+index 0872ed87..b2ca64a4 100644
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1269,8 +1269,9 @@ mt7996_tx_check_aggr(struct ieee80211_link_sta *link_sta,
+ 	if (unlikely(fc != (IEEE80211_FTYPE_DATA | IEEE80211_STYPE_QOS_DATA)))
+ 		return;
+ 
+-	if (!test_and_set_bit(tid, &wcid->ampdu_state))
+-		ieee80211_start_tx_ba_session(link_sta->sta, tid, 0);
++	if (!test_and_set_bit(tid, &wcid->ampdu_state) &&
++	    ieee80211_start_tx_ba_session(link_sta->sta, tid, 0))
++		clear_bit(tid, &wcid->ampdu_state);
+ }
+ 
+ static void
+-- 
+2.52.0
+

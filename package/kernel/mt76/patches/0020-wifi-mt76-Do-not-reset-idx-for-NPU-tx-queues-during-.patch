@@ -1,0 +1,37 @@
+From 8b3ef664b424639f11d2a860d1cc2078f3c35828 Mon Sep 17 00:00:00 2001
+Message-ID: <8b3ef664b424639f11d2a860d1cc2078f3c35828.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 21:12:31 +0100
+Subject: [PATCH 20/23] wifi: mt76: Do not reset idx for NPU tx queues during
+ reset
+
+Do not run reset_q callaback with reset_idx set to true for NPU Tx
+queues. This is a preliminary patch to properly manage reset procedure
+when NPU offloading is enabled.
+
+Tested-by: Kang Yang <kang.yang@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ dma.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dma.h b/dma.h
+index 4fd779e1..298ceffc 100644
+--- a/dma.h
++++ b/dma.h
+@@ -174,7 +174,9 @@ void mt76_dma_queue_reset(struct mt76_dev *dev, struct mt76_queue *q,
+ static inline void
+ mt76_dma_reset_tx_queue(struct mt76_dev *dev, struct mt76_queue *q)
+ {
+-	dev->queue_ops->reset_q(dev, q, true);
++	bool reset_idx = q && !mt76_queue_is_npu_tx(q);
++
++	dev->queue_ops->reset_q(dev, q, reset_idx);
+ 	if (mtk_wed_device_active(&dev->mmio.wed))
+ 		mt76_wed_dma_setup(dev, q, true);
+ }
+-- 
+2.52.0
+

@@ -1,0 +1,36 @@
+From b3f014cbcaa678fe1a5ee7276677c052f48234ff Mon Sep 17 00:00:00 2001
+Message-ID: <b3f014cbcaa678fe1a5ee7276677c052f48234ff.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 18:59:58 +0100
+Subject: [PATCH 11/23] wifi: mt76: mt7996: Fix wdma_idx for MT7996 device if
+ NPU is enabled
+
+This is a preliminary patch to enable NPU offload for MT7996 (Eagle)
+chipset.
+
+Tested-by: Kang Yang <kang.yang@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/main.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/mt7996/main.c b/mt7996/main.c
+index 2f5bf87b..1c63d4d4 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -2236,6 +2236,10 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
+ 		path->mtk_wdma.wdma_idx = wed->wdma_idx;
+ 	else
+ #endif
++	if (is_mt7996(&dev->mt76) && mt76_npu_device_active(&dev->mt76) &&
++	    msta_link->wcid.phy_idx == MT_BAND2)
++		path->mtk_wdma.wdma_idx = 1;
++	else
+ 		path->mtk_wdma.wdma_idx = link->mt76.band_idx;
+ 	path->mtk_wdma.bss = link->mt76.idx;
+ 	path->mtk_wdma.queue = 0;
+-- 
+2.52.0
+

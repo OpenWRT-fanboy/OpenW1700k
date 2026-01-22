@@ -1,0 +1,55 @@
+From d7fdcf11f7c70399ece099064c2ecfbf75fbe28a Mon Sep 17 00:00:00 2001
+Message-ID: <d7fdcf11f7c70399ece099064c2ecfbf75fbe28a.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 2 Dec 2025 20:53:51 +0100
+Subject: [PATCH 16/23] wifi: mt76: mt7996: Integrate MT7990 init configuration
+ for NPU
+
+Add NPU integration in MT7996 init codebase for MT7990 chipset.
+This is a preliminary patch to enable NPU offload for MT7996 (Eagle)
+chipset.
+
+Tested-by: Kang Yang <kang.yang@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/init.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/mt7996/init.c b/mt7996/init.c
+index 25d5d236..80671f25 100644
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -593,7 +593,7 @@ static void mt7996_mac_init_basic_rates(struct mt7996_dev *dev)
+ void mt7996_mac_init(struct mt7996_dev *dev)
+ {
+ #define HIF_TXD_V2_1	0x21
+-	int i;
++	int i, rx_path_type;
+ 
+ 	mt76_clear(dev, MT_MDP_DCR2, MT_MDP_DCR2_RX_TRANS_SHORT);
+ 
+@@ -607,11 +607,16 @@ void mt7996_mac_init(struct mt7996_dev *dev)
+ 	}
+ 
+ 	/* rro module init */
+-	if (dev->hif2)
++	if (dev->hif2) {
++		if (mt76_npu_device_active(&dev->mt76))
++			rx_path_type = is_mt7996(&dev->mt76) ? 6 : 8;
++		else
++			rx_path_type = is_mt7996(&dev->mt76) ? 2 : 7;
+ 		mt7996_mcu_set_rro(dev, UNI_RRO_SET_PLATFORM_TYPE,
+-				   is_mt7996(&dev->mt76) ? 2 : 7);
+-	else
++				   rx_path_type);
++	} else {
+ 		mt7996_mcu_set_rro(dev, UNI_RRO_SET_PLATFORM_TYPE, 0);
++	}
+ 
+ 	if (mt7996_has_hwrro(dev)) {
+ 		u16 timeout;
+-- 
+2.52.0
+

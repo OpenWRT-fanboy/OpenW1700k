@@ -1,0 +1,62 @@
+From 06f856578737d82aa3f88a3f9223cc818be24ac4 Mon Sep 17 00:00:00 2001
+Message-ID: <06f856578737d82aa3f88a3f9223cc818be24ac4.1769076464.git.lorenzo@kernel.org>
+In-Reply-To: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+References: <334773c25f0c65bde48e679b56b3348c045aaaf3.1769076464.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 4 Dec 2025 09:41:07 +0100
+Subject: [PATCH 03/23] wifi: mt76: mt7996: Set mtxq->wcid just for primary
+ link
+
+Set WCID index in mt76_txq struct just for the primary link in
+mt7996_vif_link_add routine.
+
+Fixes: 69d54ce7491d0 ("wifi: mt76: mt7996: switch to single multi-radio wiphy")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ mt7996/main.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/mt7996/main.c b/mt7996/main.c
+index e2b0ad09..317e131b 100644
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -300,7 +300,6 @@ int mt7996_vif_link_add(struct mt76_phy *mphy, struct ieee80211_vif *vif,
+ 		.cmd = SET_KEY,
+ 		.link_id = link_conf->link_id,
+ 	};
+-	struct mt76_txq *mtxq;
+ 	int mld_idx, idx, ret;
+ 
+ 	mlink->idx = __ffs64(~dev->mt76.vif_mask);
+@@ -343,11 +342,6 @@ int mt7996_vif_link_add(struct mt76_phy *mphy, struct ieee80211_vif *vif,
+ 	mt7996_mac_wtbl_update(dev, idx,
+ 			       MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
+ 
+-	if (vif->txq) {
+-		mtxq = (struct mt76_txq *)vif->txq->drv_priv;
+-		mtxq->wcid = idx;
+-	}
+-
+ 	if (vif->type != NL80211_IFTYPE_AP &&
+ 	    (!mlink->omac_idx || mlink->omac_idx > 3))
+ 		vif->offload_flags = 0;
+@@ -371,8 +365,15 @@ int mt7996_vif_link_add(struct mt76_phy *mphy, struct ieee80211_vif *vif,
+ 	ieee80211_iter_keys(mphy->hw, vif, mt7996_key_iter, &it);
+ 
+ 	if (!mlink->wcid->offchannel &&
+-	    mvif->mt76.deflink_id == IEEE80211_LINK_UNSPECIFIED)
++	    mvif->mt76.deflink_id == IEEE80211_LINK_UNSPECIFIED) {
++		if (vif->txq) {
++			struct mt76_txq *mtxq;
++
++			mtxq = (struct mt76_txq *)vif->txq->drv_priv;
++			mtxq->wcid = idx;
++		}
+ 		mvif->mt76.deflink_id = link_conf->link_id;
++	}
+ 
+ 	return 0;
+ }
+-- 
+2.52.0
+
