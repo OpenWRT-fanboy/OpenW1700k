@@ -1,16 +1,53 @@
 #
 # Copyright (C) 2025 openwrt.org
 #
+# Fan curve configuration for Gemtek W1700K
+# Uses NCT7802 fan controller via hwmon interface
+# PWM values based on stock firmware reverse-engineering:
+# RPM 770=PWM54, RPM1000=PWM69, RPM1400=PWM95, RPM2700=PWM199
+#
 
 . /lib/functions.sh
+
+# Dynamically find NCT7802 fan controller hwmon device
+find_nct7802() {
+	for hwmon in /sys/class/hwmon/hwmon*; do
+		if [ -f "$hwmon/name" ] && [ "$(cat "$hwmon/name" 2>/dev/null)" = "nct7802" ]; then
+			echo "$hwmon"
+			return
+		fi
+	done
+	echo "/sys/class/hwmon/hwmon5"  # fallback
+}
 
 board=$(board_name)
 
 case "$board" in
 gemtek,w1700k)
-    # Enable automatic fan control
-    echo 2 > /sys/class/hwmon/hwmon5/pwm1_enable
-    ;;
+	HWMON=$(find_nct7802)
+
+	# Disable automatic control temporarily to safely write settings
+	echo 1 > $HWMON/pwm1_enable
+
+	# Set temperature thresholds (in milli-celsius)
+	# Balanced curve: matches stock firmware behavior
+	echo 40000 > $HWMON/pwm1_auto_point1_temp  # 40°C - minimum fan speed
+	echo 50000 > $HWMON/pwm1_auto_point2_temp  # 50°C - light load
+	echo 60000 > $HWMON/pwm1_auto_point3_temp  # 60°C - moderate load
+	echo 70000 > $HWMON/pwm1_auto_point4_temp  # 70°C - heavy load
+	echo 80000 > $HWMON/pwm1_auto_point5_temp  # 80°C - maximum cooling
+
+	# Set PWM values at each threshold (0-255)
+	# Based on stock firmware RPM targets converted to PWM
+	echo 54  > $HWMON/pwm1_auto_point1_pwm     # ~770 RPM - near silent
+	echo 69  > $HWMON/pwm1_auto_point2_pwm     # ~1000 RPM - quiet
+	echo 95  > $HWMON/pwm1_auto_point3_pwm     # ~1400 RPM - audible
+	echo 199 > $HWMON/pwm1_auto_point4_pwm     # ~2700 RPM - moderate
+	# Note: point5_pwm is read-only (fixed at 255)
+
+	# Enable automatic mode
+	echo 2 > $HWMON/pwm1_enable
+	;;
 esac
 
 exit 0
