@@ -4,9 +4,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=rtl8261n-firmware
 PKG_SOURCE:=rtl8261n.bin
-PKG_SOURCE_URL:=https://github.com/balika011/realtek_phy_firmware/releases/download/rtl8261n-2024.03.05/
-PKG_SOURCE_VERSION:=386e15fe6a117be8c32ea14b36456a3630d027dc
-PKG_HASH:=3991ababa2de76f928ae5af1835f80534f183dc549dbd4f9eee419b7f2dea351
+PKG_SOURCE_URL:=https://github.com/balika011/realtek_phy_firmware/releases/download/rtl8261n-2024.07.29/
+PKG_SOURCE_VERSION:=0cd4abe2b0bf197f75c27088f86a74c7ddb103b4
+PKG_HASH:=9a097056b0cb369679f1dccba7004e3378b86b39c4987ed07f68ae3117d6f4c2
 
 PKG_MAINTAINER:=Balázs Triszka <info@balika011.hu>
 PKG_LICENSE_FILES:=LICENCE
