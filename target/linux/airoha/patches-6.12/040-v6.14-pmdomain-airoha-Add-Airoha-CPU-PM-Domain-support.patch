@@ -212,7 +212,7 @@ Signed-off-by: Ulf Hansson <ulf.hansson@linaro.org>
 +				   unsigned int state)
 +{
 +	void __iomem *base = priv->pll_base;
-+	unsigned int freq_mhz = 500 + state * 50;
++	unsigned int freq_mhz = 700 + state * 50;
 +	unsigned int posdiv, pcw_int;
 +	unsigned long flags;
 +	u32 val, old_chg, cleared;
