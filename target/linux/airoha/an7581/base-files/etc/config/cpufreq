@@ -1,0 +1,4 @@
+config settings 'settings'
+	# Allow the CPU to use the overclocked OPPs above 1200 MHz.
+	# Not all units are stable at these frequencies.
+	option boost '0'
