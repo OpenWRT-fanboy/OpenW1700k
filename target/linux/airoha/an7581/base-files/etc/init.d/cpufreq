@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+
+START=20
+
+start() {
+	local boost
+
+	config_load cpufreq
+	config_get_bool boost settings boost 0
+
+	[ -w /sys/devices/system/cpu/cpufreq/boost ] || return 0
+
+	echo "$boost" > /sys/devices/system/cpu/cpufreq/boost
+}
