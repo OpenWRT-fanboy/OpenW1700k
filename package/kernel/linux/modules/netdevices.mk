@@ -609,7 +609,7 @@ $(eval $(call KernelPackage,phy-airoha-en8811h))
 define KernelPackage/airoha-npu
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Airoha Network Processor Unit support
-  DEPENDS:=@TARGET_airoha +airoha-en7581-npu-firmware
+  DEPENDS:=@TARGET_airoha +airoha-en7581-mt7996-npu-firmware
   KCONFIG:=CONFIG_NET_AIROHA_NPU
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/airoha/airoha_npu.ko
   AUTOLOAD:=$(call AutoLoad,40,airoha_npu,1)
