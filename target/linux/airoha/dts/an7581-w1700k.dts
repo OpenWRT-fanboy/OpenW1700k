@@ -301,6 +301,11 @@
 	pinctrl-0 = <&pcie2_rst_pins>;
 };
 
+&npu {
+	compatible = "airoha,en7581-npu-7996";
+	status = "okay";
+};
+
 &eth {
 	status = "okay";
 };
