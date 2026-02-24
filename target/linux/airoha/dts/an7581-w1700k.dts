@@ -301,6 +301,12 @@
 	pinctrl-0 = <&pcie2_rst_pins>;
 };
 
+&npu {
+	firmware-name = "airoha/en7581_MT7996_npu_rv32.bin",
+			"airoha/en7581_MT7996_npu_data.bin";
+	status = "okay";
+};
+
 &eth {
 	status = "okay";
 };
