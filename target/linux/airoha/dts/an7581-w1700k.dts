@@ -297,6 +297,7 @@
 };
 
 &npu {
+	compatible = "airoha,en7581-npu-7996";
 	status = "okay";
 };
 
