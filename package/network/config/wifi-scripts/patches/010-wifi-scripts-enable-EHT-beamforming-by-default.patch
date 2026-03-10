@@ -1,0 +1,26 @@
+From: Chad Monroe <chad@monroe.io>
+Date: Mon, 24 Nov 2025 14:36:47 -0800
+Subject: [PATCH] wifi-scripts: enable EHT beamforming by default
+
+If EHT is supported, always enable EHT beamforming.
+
+Signed-off-by: Chad Monroe <chad@monroe.io>
+---
+ src/lib/netifd/wireless/mac80211.sh |    6 ++++++
+ 1 file changed, 6 insertions(+)
+
+--- a/src/lib/netifd/wireless/mac80211.sh
++++ b/src/lib/netifd/wireless/mac80211.sh
+@@ -517,6 +517,12 @@ mac80211_hostapd_setup_base() {
+ 
+ 	if [ "$enable_be" != "0" ]; then
+ 		append base_cfg "ieee80211be=1" "$N"
++
++		# force enable eBF for now
++		append base_cfg "eht_su_beamformer=1" "$N"
++		append base_cfg "eht_su_beamformee=1" "$N"
++		append base_cfg "eht_mu_beamformer=1" "$N"
++
+ 		[ "$hwmode" = "a" ] && {
+ 			append base_cfg "eht_oper_chwidth=$eht_oper_chwidth" "$N"
+ 			append base_cfg "eht_oper_centr_freq_seg0_idx=$eht_center_seg0" "$N"
