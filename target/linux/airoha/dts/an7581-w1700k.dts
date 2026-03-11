@@ -2,34 +2,38 @@
 
 /dts-v1/;
 
+/* Bootloader installs ATF here */
+/memreserve/ 0x80000000 0x200000;
+
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include "an7581.dtsi"
 
 / {
-	model = "Gemtek W1700K (OpenWrt U-Boot layout)";
-	compatible = "gemtek,w1700k-ubi", "airoha,an7581", "airoha,en7581";
+	model = "Gemtek W1700K";
+	compatible = "gemtek,w1700k", "airoha,an7581";
+	/* drop "airoha,en7581" as cpufreq doesn't work */
 
 	aliases {
 		serial0 = &uart1;
-		led-boot = &led_status_red;
-		led-failsafe = &led_status_blue;
+		led-boot = &led_status_green;
+		led-failsafe = &led_status_red;
 		led-upgrade = &led_status_blue;
-		led-running = &led_status_green;
+		led-running = &led_status_white;
 	};
 
 	chosen {
-		rootdisk = <&ubi_rootfs>;
-		bootargs = "console=ttyS0,115200 earlycon ubi.block=0,fit root=/dev/fit0 rootwait";
+		bootargs = "console=ttyS0,115200 earlycon";
 		stdout-path = "serial0:115200n8";
+		linux,usable-memory-range = <0x0 0x80200000 0x0 0x7fe00000>;
 	};
 
 	keys {
 		compatible = "gpio-keys";
 
 		key-restart {
-			label = "reset";
+			label = "Reset";
 			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
 		};
@@ -121,11 +125,6 @@
 		};
 	};
 
-	/* W1700K does not use the built-in LED controller. Instead, it uses GPIO.
-	 * The driver fails to probe without gswpX_led0_pins defined, so put a dummy
-	 * here.
-	 */
-
 	gswp1_led0_pins: gswp1-led0-pins {
 		mux {
 			function = "phy1_led0";
@@ -168,45 +167,63 @@
 		#size-cells = <1>;
 
 		partition@0 {
-			label = "vendor";
-			reg = <0x00000000 0x00600000>;
+			label = "bootloader";
+			reg = <0x00000000 0x00200000>;
 			read-only;
+		};
+
+		partition@200000 {
+			label = "uenv";
+			reg = <0x00200000 0x00200000>;
+		};
+
+		partition@400000 {
+			label = "dsd";
+			reg = <0x00400000 0x00001000>;
+			read-only;
+
+			nvmem-layout {
+				compatible = "ascii-eq-delim-env";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				lan_mac: lan_mac {
+					compatible = "mac-base";
+					#nvmem-cell-cells = <1>;
+				};
+
+				wan_mac: wan_mac {
+					compatible = "mac-base";
+					#nvmem-cell-cells = <1>;
+				};
+			};
+		};
+
+		partition@401000 {
+			label = "factory";
+			reg = <0x00401000 0x001ff000>;
+			read-only;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				eeprom_factory_4000: eeprom@4000 {
+					reg = <0x4000 0x1e00>;
+				};
+			};
 		};
 
 		partition@600000 {
-			label = "chainloader";
-			reg = <0x00600000 0x00100000>;
-			read-only;
+			label = "kernel";
+			reg = <0x00600000 0x01000000>;
 		};
 
-		partition@700000 {
-			label = "ubi";
-			reg = <0x00700000 0x1f700000>;
+		partition@1600000 {
+			label = "rootfs";
+			reg = <0x01600000 0x1e800000>;
 			compatible = "linux,ubi";
-
-			volumes {
-				ubi-volume-ubootenv {
-					volname = "ubootenv";
-					nvmem-layout {
-						compatible = "u-boot,env-redundant-bool";
-					};
-				};
-
-				ubi-volume-ubootenv2 {
-					volname = "ubootenv2";
-					nvmem-layout {
-						compatible = "u-boot,env-redundant-bool";
-					};
-				};
-
-				ubi_rootfs: ubi-volume-fit {
-					volname = "fit";
-				};
-
-				ubi_factory: ubi-volume-factory {
-					volname = "factory";
-				};
-			};
 		};
 
 		/* reserved for bad block table */
@@ -214,28 +231,6 @@
 			label = "reserved_bmt";
 			reg = <0x1fe00000 0x00200000>;
 			read-only;
-		};
-	};
-};
-
-&ubi_factory {
-	nvmem-layout {
-		compatible = "fixed-layout";
-		#address-cells = <1>;
-		#size-cells = <1>;
-
-		eeprom: eeprom@0 {
-			reg = <0x0 0x1e00>;
-		};
-
-		wan_mac: macaddr@5000 {
-			reg = <0x5000 0x6>;
-		};
-
-		lan_mac: macaddr@6000 {
-			compatible = "mac-base";
-			reg = <0x6000 0x6>;
-			#nvmem-cell-cells = <1>;
 		};
 	};
 };
@@ -264,10 +259,11 @@
 			reg = <0x0000 0 0 0 0>;
 			#address-cells = <1>;
 			#size-cells = <0>;
-			nvmem-cells = <&eeprom>;
+			nvmem-cells = <&eeprom_factory_4000>;
 			nvmem-cell-names = "eeprom";
 			airoha,npu = <&npu>;
 			airoha,eth = <&eth>;
+			ieee80211-freq-limit = <2400000 2500000>, <5170000 5895000>, <5945000 7125000>;
 
 			band@0 {
 				/* 2.4 GHz */
@@ -301,8 +297,6 @@
 };
 
 &npu {
-	firmware-name = "airoha/en7581_MT7996_npu_rv32.bin",
-		"airoha/en7581_MT7996_npu_data.bin";
 	status = "okay";
 };
 
@@ -378,15 +372,25 @@
 	pinctrl-0 = <&gswp1_led0_pins>;
 };
 
-&gsw_port1 {
+&gsw_phy1_led0 {
 	status = "okay";
-	label = "lan3";
+	function = LED_FUNCTION_LAN;
 };
 
 &gsw_phy2 {
 	status = "okay";
 	pinctrl-names = "gbe-led";
 	pinctrl-0 = <&gswp2_led0_pins>;
+};
+
+&gsw_phy2_led0 {
+	status = "okay";
+	function = LED_FUNCTION_LAN;
+};
+
+&gsw_port1 {
+	status = "okay";
+	label = "lan3";
 };
 
 &gsw_port2 {
