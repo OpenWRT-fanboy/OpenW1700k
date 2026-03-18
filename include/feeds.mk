@@ -51,8 +51,7 @@ define FeedSourcesAppendAPK
   echo '%U/targets/%S/packages/packages.adb'; \
   $(strip $(if $(CONFIG_PER_FEED_REPO), \
 	echo '%U/packages/%A/base/packages.adb'; \
-	$(if $(CONFIG_BUILDBOT), \
-		echo '%U/targets/%S/kmods/$(LINUX_VERSION)-$(LINUX_RELEASE)-$(LINUX_VERMAGIC)/packages.adb';) \
+	echo '%U/targets/%S/kmods/$(LINUX_VERSION)-$(LINUX_RELEASE)-$(LINUX_VERMAGIC)/packages.adb'; \
 	$(foreach feed,$(FEEDS_AVAILABLE), \
 		$(if $(CONFIG_FEED_$(feed)), \
 			echo '$(if $(filter m,$(CONFIG_FEED_$(feed))),# )%U/packages/%A/$(feed)/packages.adb';)))) \
