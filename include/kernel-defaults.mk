@@ -127,6 +127,7 @@ define Kernel/Configure/Default
 	}
 	$(_SINGLE) [ -d $(LINUX_DIR)/user_headers ] || $(KERNEL_MAKE) $(if $(findstring uml,$(BOARD)),ARCH=$(ARCH)) INSTALL_HDR_PATH=$(LINUX_DIR)/user_headers headers_install
 	grep '=[ym]' $(LINUX_DIR)/.config.set | LC_ALL=C sort | $(MKHASH) md5 > $(LINUX_DIR)/.vermagic
+	[ -f ../../../files/etc/vermagic.txt ] && cp ../../../files/etc/vermagic.txt $(LINUX_DIR)/.vermagic
 endef
 
 define Kernel/Configure/Initramfs
