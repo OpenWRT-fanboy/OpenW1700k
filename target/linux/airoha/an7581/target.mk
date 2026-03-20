@@ -6,9 +6,9 @@ KERNELNAME:=Image dtbs
 FEATURES+=pwm
 
 DEFAULT_PACKAGES += \
-	kmod-airoha-eth kmod-dsa-mt7530-mmio uboot-envtools
+	kmod-airoha-eth kmod-dsa-mt7530-mmio uboot-envtools \
+	kmod-br-netfilter
 
 define Target/Description
 	Build firmware images for Airoha an7581 ARM based boards.
 endef
-
