@@ -1,0 +1,27 @@
+#!/bin/sh
+
+[ "$ACTION" = ifup ] || exit 0
+[ "$INTERFACE" = lan ] || exit 0
+
+(
+	exec 9>/var/lock/bridge-hw-offload.lock
+	flock -n 9 || exit 0
+	# Wait for bridge membership to settle instead of a fixed sleep:
+	# wireless AP interfaces may join br-lan long after lan ifup
+	# (hostapd startup, DFS CAC). Apply once the port set is stable.
+	prev=""; stable=0; waited=0
+	while [ "$waited" -lt 120 ]; do
+		cur=$(ls /sys/class/net/br-lan/brif 2>/dev/null | sort | tr '\n' ' ')
+		if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
+			stable=$((stable + 1))
+			[ "$stable" -ge 3 ] && break
+		else
+			stable=0
+		fi
+		prev="$cur"
+		sleep 5; waited=$((waited + 5))
+	done
+	/usr/share/bridge-hw-offload/apply-rules.sh
+) &
+
+exit 0
