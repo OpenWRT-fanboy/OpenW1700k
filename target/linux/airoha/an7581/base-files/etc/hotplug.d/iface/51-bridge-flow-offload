@@ -1,0 +1,13 @@
+#!/bin/sh
+
+[ "$ACTION" = ifup ] || exit 0
+[ "$INTERFACE" = lan ] || exit 0
+
+(
+	exec 9>/var/lock/bridge-flow-offload.lock
+	flock -n 9 || exit 0
+	sleep 10
+	/usr/share/bridge-flow-offload/apply-rules.sh
+) &
+
+exit 0
