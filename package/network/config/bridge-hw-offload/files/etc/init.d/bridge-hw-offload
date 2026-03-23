@@ -1,0 +1,25 @@
+#!/bin/sh /etc/rc.common
+# Regenerate bridge HW-offload rules when firewall config changes,
+# so toggling flow_offloading_hw takes effect without reboot.
+#
+# Boot-time setup is still handled by the delayed lan-ifup hotplug
+# script (allows WiFi AP interfaces to join br-lan first); this service
+# exists so procd notifies us of firewall UCI changes (start_service
+# registers the service and its triggers below with procd).
+
+USE_PROCD=1
+START=21
+
+start_service() {
+	procd_openinstance
+	procd_set_param command /bin/true
+	procd_closeinstance
+}
+
+service_triggers() {
+	procd_add_reload_trigger firewall
+}
+
+reload_service() {
+	/usr/share/bridge-hw-offload/apply-rules.sh
+}
