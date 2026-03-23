@@ -1394,6 +1394,21 @@ endef
 $(eval $(call KernelPackage,nft-offload))
 
 
+define KernelPackage/nf-flow-bridge
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter flow table bridge support
+  DEPENDS:=+kmod-nf-flow +kmod-nft-offload
+  KCONFIG:= \
+	CONFIG_NF_TABLES_BRIDGE \
+	CONFIG_NF_FLOW_TABLE_BRIDGE
+  FILES:= \
+	$(LINUX_DIR)/net/netfilter/nf_flow_table_bridge.ko
+  AUTOLOAD:=$(call AutoProbe,nf_flow_table_bridge)
+endef
+
+$(eval $(call KernelPackage,nf-flow-bridge))
+
+
 define KernelPackage/nft-netdev
   SUBMENU:=$(NF_MENU)
   TITLE:=Netfilter nf_tables netdev support
