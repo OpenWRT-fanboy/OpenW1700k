@@ -20,20 +20,18 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  drivers/net/pcs/airoha/pcs-airoha-common.c | 1033 ++++++++++++++
  drivers/net/pcs/airoha/pcs-airoha.h        |  822 ++++++++++++
  drivers/net/pcs/airoha/pcs-an7581.c        | 1419 ++++++++++++++++++++
- include/linux/pcs/pcs-airoha.h             |    9 +
- 8 files changed, 3305 insertions(+)
+ 7 files changed, 3296 insertions(+)
  create mode 100644 drivers/net/pcs/airoha/Kconfig
  create mode 100644 drivers/net/pcs/airoha/Makefile
  create mode 100644 drivers/net/pcs/airoha/pcs-airoha-common.c
  create mode 100644 drivers/net/pcs/airoha/pcs-airoha.h
  create mode 100644 drivers/net/pcs/airoha/pcs-an7581.c
- create mode 100644 include/linux/pcs/pcs-airoha.h
 
 --- a/drivers/net/pcs/Kconfig
 +++ b/drivers/net/pcs/Kconfig
-@@ -44,4 +44,6 @@ config PCS_RZN1_MIIC
- 	  on RZ/N1 SoCs. This PCS converts MII to RMII/RGMII or can be set in
- 	  pass-through mode for MII.
+@@ -45,4 +45,6 @@ config PCS_RZN1_MIIC
+ 	  Renesas RZ/N1, RZ/N2H, and RZ/T2H SoCs. This PCS converts MII to
+ 	  RMII/RGMII, or can be set in pass-through mode for MII.
  
 +source "drivers/net/pcs/airoha/Kconfig"
 +
@@ -48,11 +46,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +obj-$(CONFIG_PCS_AIROHA)	+= airoha/
 --- /dev/null
 +++ b/drivers/net/pcs/airoha/Kconfig
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,15 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +config PCS_AIROHA
-+	tristate
++	tristate "Airoha PCS driver"
++	select FWNODE_PCS
++	help
++	  This module provides helper to phylink for managing the Airoha
++	  PCS for SoC Ethernet Serdes and PCS.
 +
 +config PCS_AIROHA_AN7581
 +	tristate "Airoha AN7581 PCS driver"
@@ -72,7 +74,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +endif
 --- /dev/null
 +++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
-@@ -0,0 +1,1035 @@
+@@ -0,0 +1,1009 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (c) 2024 AIROHA Inc
@@ -83,11 +85,12 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +#include <linux/mfd/syscon.h>
 +#include <linux/of.h>
 +#include <linux/of_platform.h>
-+#include <linux/pcs/pcs-airoha.h>
++#include <linux/pcs/pcs-provider.h>
 +#include <linux/phylink.h>
 +#include <linux/platform_device.h>
 +#include <linux/regmap.h>
 +#include <linux/reset.h>
++#include <linux/rtnetlink.h>
 +
 +#include "pcs-airoha.h"
 +
@@ -329,6 +332,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +}
 +
 +static void airoha_pcs_get_state_sgmii(struct airoha_pcs_priv *priv,
++				       unsigned int neg_mode,
 +				       struct phylink_link_state *state)
 +{
 +	u32 bmsr, lpa;
@@ -344,7 +348,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		AIROHA_PCS_HSGMII_AN_SGMII_LINK_STATUS) & bmsr;
 +	lpa = AIROHA_PCS_HSGMII_AN_SGMII_PARTNER_ABILITY & lpa;
 +
-+	phylink_mii_c22_pcs_decode_state(state, bmsr, lpa);
++	phylink_mii_c22_pcs_decode_state(state, neg_mode, bmsr, lpa);
 +}
 +
 +static void airoha_pcs_get_state_hsgmii(struct airoha_pcs_priv *priv,
@@ -431,15 +435,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +}
 +
 +static void airoha_pcs_get_state(struct phylink_pcs *pcs,
++				 unsigned int neg_mode,
 +				 struct phylink_link_state *state)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +
 +	switch (state->interface) {
 +	case PHY_INTERFACE_MODE_SGMII:
 +	case PHY_INTERFACE_MODE_1000BASEX:
-+		airoha_pcs_get_state_sgmii(priv, state);
++		airoha_pcs_get_state_sgmii(priv, neg_mode, state);
 +		break;
 +	case PHY_INTERFACE_MODE_2500BASEX:
 +		airoha_pcs_get_state_hsgmii(priv, state);
@@ -460,8 +464,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +			     const unsigned long *advertising,
 +			     bool permit_pause_to_mac)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +	const struct airoha_pcs_match_data *data;
 +	u32 rate_adapt;
 +	int ret;
@@ -647,8 +650,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +static void airoha_pcs_an_restart(struct phylink_pcs *pcs)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +
 +	switch (priv->interface) {
 +	case PHY_INTERFACE_MODE_SGMII:
@@ -674,8 +676,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static void airoha_pcs_link_up(struct phylink_pcs *pcs, unsigned int neg_mode,
 +			       phy_interface_t interface, int speed, int duplex)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +	const struct airoha_pcs_match_data *data;
 +
 +	data = priv->data;
@@ -826,8 +827,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +static void airoha_pcs_link_down(struct phylink_pcs *pcs)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +
 +	/* MPI MBI disable */
 +	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
@@ -840,8 +840,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static void airoha_pcs_pre_config(struct phylink_pcs *pcs,
 +				  phy_interface_t interface)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +
 +	/* Select HSGMII or USXGMII in SCU regs */
 +	airoha_pcs_setup_scu(priv, interface);
@@ -869,8 +868,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static int airoha_pcs_post_config(struct phylink_pcs *pcs,
 +				  phy_interface_t interface)
 +{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+	struct airoha_pcs_priv *priv = port->priv;
++	struct airoha_pcs_priv *priv = phylink_pcs_to_airoha_pcs_port(pcs);
 +
 +	/* Frag disable */
 +	regmap_update_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
@@ -903,50 +901,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	.pcs_link_up = airoha_pcs_link_up,
 +	.pcs_link_down = airoha_pcs_link_down,
 +};
-+
-+struct phylink_pcs *airoha_pcs_create(struct device *dev)
-+{
-+	struct platform_device *pdev;
-+	struct airoha_pcs_port *port;
-+	struct device_node *np;
-+
-+	np = of_parse_phandle(dev->of_node, "pcs", 0);
-+	if (!np)
-+		return ERR_PTR(-ENODEV);
-+
-+	if (!of_device_is_available(np)) {
-+		of_node_put(np);
-+		return ERR_PTR(-ENODEV);
-+	}
-+
-+	pdev = of_find_device_by_node(np);
-+	of_node_put(np);
-+	if (!pdev || !platform_get_drvdata(pdev)) {
-+		if (pdev)
-+			put_device(&pdev->dev);
-+		return ERR_PTR(-EPROBE_DEFER);
-+	}
-+
-+	port = kzalloc(sizeof(*port), GFP_KERNEL);
-+	if (!port)
-+		return ERR_PTR(-ENOMEM);
-+
-+	port->priv = platform_get_drvdata(pdev);
-+	port->pcs.ops = &airoha_pcs_ops;
-+	port->pcs.neg_mode = true;
-+	port->pcs.poll = true;
-+
-+	return &port->pcs;
-+}
-+EXPORT_SYMBOL(airoha_pcs_create);
-+
-+void airoha_pcs_destroy(struct phylink_pcs *pcs)
-+{
-+	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
-+
-+	kfree(port);
-+}
-+EXPORT_SYMBOL(airoha_pcs_destroy);
 +
 +static const struct regmap_config airoha_pcs_regmap_config = {
 +	.reg_bits = 32,
@@ -1073,7 +1027,28 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +	platform_set_drvdata(pdev, priv);
 +
-+	return 0;
++	priv->pcs.ops = &airoha_pcs_ops;
++	priv->pcs.poll = true;
++
++	__set_bit(PHY_INTERFACE_MODE_SGMII, priv->pcs.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_1000BASEX, priv->pcs.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_2500BASEX, priv->pcs.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_10GBASER, priv->pcs.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_USXGMII, priv->pcs.supported_interfaces);
++
++	return fwnode_pcs_add_provider(dev_fwnode(dev), fwnode_pcs_simple_get,
++				   &priv->pcs);
++}
++
++static void airoha_pcs_remove(struct platform_device *pdev)
++{
++	struct airoha_pcs_priv *priv = platform_get_drvdata(pdev);
++
++	fwnode_pcs_del_provider(dev_fwnode(&pdev->dev));
++
++	rtnl_lock();
++	phylink_release_pcs(&priv->pcs);
++	rtnl_unlock();
 +}
 +
 +static const struct airoha_pcs_match_data an7581_pcs_eth = {
@@ -1102,6 +1077,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		.of_match_table = airoha_pcs_of_table,
 +	},
 +	.probe = airoha_pcs_probe,
++	.remove = airoha_pcs_remove,
 +};
 +module_platform_driver(airoha_pcs_driver);
 +
@@ -1110,7 +1086,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +MODULE_AUTHOR("Christian Marangi <ansuelsmth@gmail.com>");
 --- /dev/null
 +++ b/drivers/net/pcs/airoha/pcs-airoha.h
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,821 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (c) 2024 AIROHA Inc
@@ -1892,10 +1868,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	struct reset_control_bulk_data rsts[AIROHA_PCS_MAX_NUM_RSTS];
 +
 +	bool manual_rx_calib;
-+};
-+
-+struct airoha_pcs_port {
-+	struct airoha_pcs_priv *priv;
 +
 +	struct phylink_pcs pcs;
 +};
@@ -1909,7 +1881,10 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	int (*rxlock_workaround)(struct airoha_pcs_priv *priv);
 +};
 +
-+#define to_airoha_pcs_port(n) container_of(n, struct airoha_pcs_port, pcs);
++static inline struct airoha_pcs_priv *phylink_pcs_to_airoha_pcs_port(struct phylink_pcs *pcs)
++{
++	return container_of(pcs, struct airoha_pcs_priv, pcs);
++}
 +
 +#ifdef CONFIG_PCS_AIROHA_AN7581
 +int an7581_pcs_bringup(struct airoha_pcs_priv *priv,
@@ -3355,15 +3330,3 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	 */
 +	return -EINVAL;
 +}
---- /dev/null
-+++ b/include/linux/pcs/pcs-airoha.h
-@@ -0,0 +1,9 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+
-+#ifndef __LINUX_PCS_AIROHA_H
-+#define __LINUX_PCS_AIROHA_H
-+
-+struct phylink_pcs *airoha_pcs_create(struct device *dev);
-+void airoha_pcs_destroy(struct phylink_pcs *pcs);
-+
-+#endif /* __LINUX_PCS_AIROHA_H */
