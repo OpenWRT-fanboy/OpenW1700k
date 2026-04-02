@@ -9,6 +9,8 @@ DEFAULT_PACKAGES += \
 	airoha-an7583-npu-firmware kmod-leds-gpio \
 	kmod-gpio-button-hotplug uboot-envtools
 
+DEFAULT_PACKAGES += kmod-crypto-hw-eip93
+
 define Target/Description
 	Build firmware images for Airoha an7583 ARM based boards.
 endef
