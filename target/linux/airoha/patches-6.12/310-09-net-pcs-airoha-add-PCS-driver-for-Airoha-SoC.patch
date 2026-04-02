@@ -910,7 +910,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	struct airoha_pcs_port *port;
 +	struct device_node *np;
 +
-+	np = of_parse_phandle(dev->of_node, "pcs", 0);
++	np = of_parse_phandle(dev->of_node, "pcs-handle", 0);
 +	if (!np)
 +		return ERR_PTR(-ENODEV);
 +
