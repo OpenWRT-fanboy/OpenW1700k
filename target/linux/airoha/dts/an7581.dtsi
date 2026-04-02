@@ -465,6 +465,7 @@
 
 		pon_pcs: pcs@1fa08000 {
 			compatible = "airoha,an7581-pcs-pon";
+			#pcs-cells = <0>;
 			reg = <0x0 0x1fa08000 0x0 0x1000>,
 			      <0x0 0x1fa80000 0x0 0x60>,
 			      <0x0 0x1fa80a00 0x0 0x164>,
@@ -486,6 +487,7 @@
 
 		eth_pcs: pcs@1fa09000 {
 			compatible = "airoha,an7581-pcs-eth";
+			#pcs-cells = <0>;
 			reg = <0x0 0x1fa09000 0x0 0x1000>,
 			      <0x0 0x1fa70000 0x0 0x60>,
 			      <0x0 0x1fa70a00 0x0 0x164>,
@@ -917,7 +919,7 @@
 			gdm2: ethernet@2 {
 				compatible = "airoha,eth-mac";
 				reg = <2>;
-				pcs = <&pon_pcs>;
+				pcs-handle = <&pon_pcs>;
 
 				status = "disabled";
 			};
@@ -925,7 +927,7 @@
 			gdm4: ethernet@4 {
 				compatible = "airoha,eth-mac";
 				reg = <4>;
-				pcs = <&eth_pcs>;
+				pcs-handle = <&eth_pcs>;
 
 				status = "disabled";
 			};
