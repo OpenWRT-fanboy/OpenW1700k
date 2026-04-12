@@ -1,0 +1,61 @@
+From 84cf9e541cccb8cb698518a9897942e8c78f1d83 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 9 Jan 2025 14:12:58 +0100
+Subject: [PATCH] cpufreq: airoha: Add EN7581 CPUFreq SMCCC driver
+
+Add simple CPU Freq driver for Airoha EN7581 SoC that control CPU
+frequency scaling with SMC APIs and register a generic "cpufreq-dt"
+device.
+
+All CPU share the same frequency and can't be controlled independently.
+CPU frequency is controlled by the attached PM domain.
+
+Add SoC compatible to cpufreq-dt-plat block list as a dedicated cpufreq
+driver is needed with OPP v2 nodes declared in DTS.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+---
+ drivers/cpufreq/Kconfig.arm          |   8 ++
+ drivers/cpufreq/airoha-cpufreq.c     | 152 +++++++++++++++++++++++++++
+ drivers/cpufreq/cpufreq-dt-platdev.c |   2 +
+ 3 files changed, 163 insertions(+)
+ create mode 100644 drivers/cpufreq/airoha-cpufreq.c
+
+--- a/drivers/cpufreq/Kconfig.arm
++++ b/drivers/cpufreq/Kconfig.arm
+@@ -15,6 +15,14 @@ config ARM_ALLWINNER_SUN50I_CPUFREQ_NVME
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called sun50i-cpufreq-nvmem.
+ 
++config ARM_AIROHA_SOC_CPUFREQ
++	tristate "Airoha EN7581 SoC CPUFreq support"
++	depends on ARCH_AIROHA || COMPILE_TEST
++	select PM_OPP
++	default ARCH_AIROHA
++	help
++	  This adds the CPUFreq driver for Airoha EN7581 SoCs.
++
+ config ARM_APPLE_SOC_CPUFREQ
+ 	tristate "Apple Silicon SoC CPUFreq support"
+ 	depends on ARCH_APPLE || (COMPILE_TEST && 64BIT)
+--- a/drivers/cpufreq/airoha-cpufreq.c
++++ b/drivers/cpufreq/airoha-cpufreq.c
+@@ -110,6 +110,7 @@ static struct platform_driver airoha_cpufreq_driver = {
+ static const struct of_device_id airoha_cpufreq_match_list[] __initconst = {
+ 	{ .compatible = "airoha,an7583" },
+ 	{ .compatible = "airoha,en7581" },
++	{ .compatible = "airoha,an7581" },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, airoha_cpufreq_match_list);
+--- a/drivers/cpufreq/cpufreq-dt-platdev.c
++++ b/drivers/cpufreq/cpufreq-dt-platdev.c
+@@ -106,6 +106,7 @@ static const struct of_device_id allowlist[] __initconst = {
+ static const struct of_device_id blocklist[] __initconst = {
+ 	{ .compatible = "airoha,an7583", },
+ 	{ .compatible = "airoha,en7581", },
++	{ .compatible = "airoha,an7581", },
+ 
+ 	{ .compatible = "allwinner,sun50i-a100" },
+ 	{ .compatible = "allwinner,sun50i-h6", },
