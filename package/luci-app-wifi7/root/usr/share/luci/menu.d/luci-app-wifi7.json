@@ -1,0 +1,13 @@
+{
+    "admin/network/wifi7": {
+        "title": "WiFi 7",
+        "order": 16,
+        "action": {
+            "type": "view",
+            "path": "wifi7/index"
+        },
+        "depends": {
+            "acl": [ "luci-mod-network-config" ]
+        }
+    }
+}
