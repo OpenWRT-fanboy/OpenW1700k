@@ -1,0 +1,89 @@
+#!/bin/sh
+# trafficchart-v6prefixes - print a regex matching the LAN-side IPv6 GUA
+# prefixes in the fully expanded form used by /proc/net/nf_conntrack.
+# Prints nothing if there are none.
+#
+# "ip -6 route show" prints compressed addresses ("2a02:1234:5678:1::/64"),
+# the conntrack proc file prints them expanded and zero padded
+# ("2a02:1234:5678:0001:..."), so each route is expanded to 8 groups first.
+#
+# Prefix lengths that are not a multiple of 16 (e.g. /65, /60, /68 - not
+# unusual with some ISPs' DHCPv6-PD allocations) used to be silently rounded
+# DOWN to the nearest full 16-bit group: int(mask/16) simply dropped the
+# leftover bits, so a /65 was matched as if it were a /64. That widens the
+# matched range to twice the real delegation and can misclassify addresses
+# outside it (in the other half of that /64) as LAN, which feeds straight
+# into trafficchart-agg's islocal() and therefore device/router attribution.
+#
+# This version matches the prefix exactly: full 16-bit groups are matched
+# literally, and a partially covered group is matched with a hex-digit
+# character class derived from the fixed high bits of that group
+# (nibble_class()), so no more and no less than the real prefix is matched.
+ip -6 route show scope global 2>/dev/null | awk '
+    function hexdigit(v) { return substr("0123456789abcdef", v + 1, 1) }
+
+    # Regex for one hex digit whose top "bits" bits (0-4) must equal the top
+    # "bits" bits of nibble value v (0-15). bits>=4 -> exact digit,
+    # bits<=0 -> any digit, otherwise a contiguous character class (the set of
+    # hex digits sharing those top bits is always a contiguous range).
+    function nibble_class(v, bits,   size, base, lo, hi) {
+        if (bits <= 0) return "[0-9a-f]"
+        if (bits >= 4) return hexdigit(v)
+        size = (bits == 1) ? 8 : (bits == 2) ? 4 : 2
+        base = int(v / size) * size
+        lo = base; hi = base + size - 1
+        return (lo == hi) ? hexdigit(lo) : "[" hexdigit(lo) "-" hexdigit(hi) "]"
+    }
+
+    !/^default/ && $1 ~ /^[23]/ {
+        n = split($1, parts, "/")
+        addr = parts[1]
+        mask = (n == 2) ? parts[2] + 0 : 128
+        if (mask <= 0) next        # /0 is not a usable LAN-prefix signal
+        if (mask > 128) mask = 128
+
+        sn = split(addr, halves, "::")
+        if (sn == 2) { left = halves[1]; right = halves[2] }
+        else if (sn == 1) { left = halves[1]; right = "" }
+        else next
+
+        lc = (left == "") ? 0 : split(left, lg, ":")
+        rc = (right == "") ? 0 : split(right, rg, ":")
+        missing = 8 - lc - rc
+        if (missing < 0) next
+
+        idx = 0
+        for (i = 1; i <= lc; i++) {
+            g = lg[i]
+            while (length(g) < 4) g = "0" g
+            full[++idx] = tolower(g)
+        }
+        for (i = 1; i <= missing; i++) full[++idx] = "0000"
+        for (i = 1; i <= rc; i++) {
+            g = rg[i]
+            while (length(g) < 4) g = "0" g
+            full[++idx] = tolower(g)
+        }
+        if (idx != 8) next
+
+        full_groups = int(mask / 16)
+        rem_bits = mask - full_groups * 16     # 0..15 leftover bits in the next group
+
+        out = "^"; sep = ""
+        for (i = 1; i <= full_groups; i++) { out = out sep full[i]; sep = ":" }
+
+        if (rem_bits > 0 && full_groups < 8) {
+            g = full[full_groups + 1]
+            nfull = int(rem_bits / 4)          # fully fixed hex digits in this group
+            nrembits = rem_bits - nfull * 4    # 0..3 leftover bits within the next digit
+            part = ""
+            for (i = 1; i <= nfull; i++) part = part substr(g, i, 1)
+            if (nrembits > 0) {
+                dv = index("0123456789abcdef", substr(g, nfull + 1, 1)) - 1
+                part = part nibble_class(dv, nrembits)
+            }
+            out = out sep part
+        }
+        print out
+    }
+' | tr '\n' '|' | sed 's/|$//'

@@ -1,0 +1,65 @@
+#!/bin/sh
+# trafficchart-tc - post-shaping byte counters + shaper drop/ECN counters + backlog for
+# trafficchart-agg
+#
+# Prints ONE line:
+# "<rx_bytes> <tx_bytes> <rx_dropped> <rx_ecn> <tx_dropped> <tx_ecn> <rx_backlog> <tx_backlog>"
+#
+# (download / upload byte counters since the shaper qdiscs were created, summed
+# over all enabled SQM queues; and the same qdiscs' cumulative dropped-packet
+# and ECN-mark counters, summed the same way; plus the momentary queue backlog in
+# bytes of those qdiscs). Any field that cannot be determined is printed as "-".
+#
+# trafficchart-agg calls this in the same loop iteration in which it reads
+# /proc/net/nf_conntrack and timestamps both with its own clock, so the link
+# rate (tc), the shaper health counters and the per-application / device /
+# destination rates (conntrack) all refer to the same moment. The daemon turns
+# the cumulative drop/ECN counters into per-bucket deltas the same way it
+# already does for application/device/destination totals (see hist_close() in
+# trafficchart-agg), so shaper health becomes part of the History tab instead
+# of only being visible live.
+#
+# Which devices are read (nss: download = nssifb, upload = WAN device without
+# VLAN suffix; generic: download = ifb4<wan>, upload = the SQM interface) is
+# decided in trafficchart-common, shared with luci.trafficchart.
+
+# TC_COMMON: testing only
+. "${TC_COMMON:-/usr/libexec/trafficchart-common}" || { echo "- - - - - - - -"; exit 0; }
+
+tc_resolve
+tc_read_counters
+
+RXD_DROP=0; RXD_ECN=0; RXD_BL=0; RXD_OK=0
+for d in $RX_DEVS; do
+    set -- $(tc_shaper_drops "$d" "$BACKEND")
+    [ -n "$1" ] || continue
+    RXD_DROP=$((RXD_DROP + ${1:-0}))
+    RXD_ECN=$((RXD_ECN + ${2:-0}))
+    RXD_BL=$((RXD_BL + ${3:-0}))
+    RXD_OK=1
+done
+
+TXD_DROP=0; TXD_ECN=0; TXD_BL=0; TXD_OK=0
+for d in $TX_DEVS; do
+    set -- $(tc_shaper_drops "$d" "$BACKEND")
+    [ -n "$1" ] || continue
+    TXD_DROP=$((TXD_DROP + ${1:-0}))
+    TXD_ECN=$((TXD_ECN + ${2:-0}))
+    TXD_BL=$((TXD_BL + ${3:-0}))
+    TXD_OK=1
+done
+
+[ "$RXD_OK" = "1" ] || {
+    RXD_DROP="-"
+    RXD_ECN="-"
+    RXD_BL="-"
+}
+
+[ "$TXD_OK" = "1" ] || {
+    TXD_DROP="-"
+    TXD_ECN="-"
+    TXD_BL="-"
+}
+
+echo "${RX_BYTES:--} ${TX_BYTES:--} ${RXD_DROP} ${RXD_ECN} ${TXD_DROP} ${TXD_ECN} ${RXD_BL} ${TXD_BL}"
+exit 0

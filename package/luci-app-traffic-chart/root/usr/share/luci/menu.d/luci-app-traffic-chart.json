@@ -1,0 +1,23 @@
+{
+    "admin/network/traffic_chart": {
+        "title": "Traffic Chart",
+        "action": {
+            "type": "view",
+            "path": "network/traffic_chart"
+        },
+        "depends": {
+            "acl": [ "luci-app-traffic-chart" ]
+        }
+    },
+    "admin/network/trafficchart_config": {
+        "title": "Traffic Chart Settings",
+        "order": 10,
+        "action": {
+            "type": "view",
+            "path": "network/trafficchart_config"
+        },
+        "depends": {
+            "acl": [ "luci-app-traffic-chart" ]
+        }
+    }
+}

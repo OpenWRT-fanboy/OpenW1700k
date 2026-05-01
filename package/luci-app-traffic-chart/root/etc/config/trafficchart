@@ -1,0 +1,6 @@
+
+config trafficchart 'global'
+	option enabled '1'
+	option backend 'auto'
+	option profile 'very-low-cpu'
+

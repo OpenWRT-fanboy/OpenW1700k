@@ -1,0 +1,17 @@
+{
+    "luci-app-traffic-chart": {
+        "description": "Grant access to Traffic Chart rpcd and settings",
+        "read": {
+            "ubus": {
+                "luci.trafficchart": [ "get_stats" ]
+            },
+            "uci": [ "trafficchart" ]
+        },
+        "write": {
+            "ubus": {
+                "luci.trafficchart": [ "restart", "reset_history" ]
+            },
+            "uci": [ "trafficchart" ]
+        }
+    }
+}

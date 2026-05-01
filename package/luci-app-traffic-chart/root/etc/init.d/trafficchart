@@ -1,0 +1,60 @@
+#!/bin/sh /etc/rc.common
+# /etc/init.d/trafficchart
+#
+# Settings: /etc/config/trafficchart (section "global"). "enabled" and "apps" are
+# read here, all tunables of the daemon by trafficchart-agg itself. A "uci commit
+# trafficchart" restarts the service (reload trigger below), so changes apply
+# at once. Restarting resets the cumulative totals, the history survives.
+
+START=99
+STOP=10
+USE_PROCD=1
+
+start_service() {
+    local enabled apps
+    config_load trafficchart
+    config_get_bool enabled global enabled 1
+    [ "$enabled" -eq 1 ] || return 0
+    config_get_bool apps global apps 1
+
+    # conntrack aggregator (application / device / destination totals)
+    procd_open_instance agg
+    procd_set_param command /usr/libexec/trafficchart-agg
+    procd_set_param nice 10
+    procd_set_param respawn 3600 5 0
+    # on stop the daemon closes its open history buckets and writes them to the
+    # persistent storage (needs a few seconds, more with a slow network share; procd would SIGKILL after 5 s)
+    procd_set_param term_timeout 20
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+
+    # netifyd -> "flow tuple -> application" map (needs socat + netifyd
+    # with a [socket] listen_path); only started when both are installed
+    if [ "$apps" -eq 1 ] && ! command -v socat >/dev/null 2>&1; then
+        logger -t trafficchart "application names disabled: socat is not installed"
+        apps=0
+    fi
+    if [ "$apps" -eq 1 ] && ! command -v netifyd >/dev/null 2>&1 && [ ! -x /usr/sbin/netifyd ]; then
+        logger -t trafficchart "application names disabled: netifyd is not installed"
+        apps=0
+    fi
+    if [ "$apps" -eq 1 ]; then
+        procd_open_instance apps
+        procd_set_param command /usr/libexec/trafficchart-apps
+        procd_set_param nice 10
+        procd_set_param respawn
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+        procd_close_instance
+    fi
+}
+
+reload_service() {
+    stop
+    start
+}
+
+service_triggers() {
+    procd_add_reload_trigger trafficchart
+}

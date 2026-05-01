@@ -1,0 +1,2028 @@
+#!/bin/sh
+# trafficchart-agg - persistent conntrack aggregator for luci.trafficchart
+#
+# Runs as a procd service (see trafficchart.init). Every INTERVAL seconds it
+# walks /proc/net/nf_conntrack ONCE, remembers the last-seen counters of every
+# flow, and adds only the per-flow DELTA to monotonically growing totals per
+# application, device and destination. Result is written atomically to
+# $OUT_DIR/classes.json (file name kept), which luci.trafficchart just serves.
+#
+# Why per-flow deltas instead of "sum of all live flows" (the old approach):
+#   - a flow that closes/expires no longer removes its bytes from the totals
+#   - a flow crossing BULK_BYTES no longer moves its ENTIRE history from
+#     WEB to BULK in a single poll (that showed up as a fake multi-hundred-MB
+#     spike in BULK and a dip in WEB); only bytes transferred AFTER the
+#     crossing count as BULK
+#   - totals survive page reloads and are shared by all open tabs
+#
+# Classification of a flow, per poll:
+#   mark & 0xff in 1..17   -> that class (0x40 = router self-traffic, ignored)
+#   mark & 0xff == 0       -> "0x0 UNMARKED": only if the flow is LAN client ->
+#                             non-local destination. Typical cause: flow was
+#                             already offloaded when the ct marks were wiped
+#                             (conntrack -U -m 0 in nft_setup) and therefore
+#                             never walks qos_classify again. Without the nftables
+#                             classifier at all (stock shaper, no nss-rk.qos) EVERY
+#                             flow is unmarked - that works, flows are just named
+#                             "[UNMARKED]" when netifyd does not label them. Also
+#                             counted: WAN-initiated flows to a LAN host (port
+#                             forward, IPv6 inbound). LAN<->LAN and router-local
+#                             flows are NOT counted here.
+#   BULK (0x6)             -> a flow of class WEB/P2P/BE whose total exceeds
+#                             BULK_BYTES. All other classes are exempt (they
+#                             are identified by protocol/port, see nss-rk.qos).
+#                             Class-based instead of port-list based, so
+#                             there is no second copy of the port lists to
+#                             keep in sync.
+#
+# Per-application view (optional): trafficchart-apps writes $OUT_DIR/apps.map
+# (flow tuple -> application, from netifyd). Every active flow that has a
+# label adds its conntrack DELTA to that application; netifyd only names
+# flows, it never supplies numbers. A new flow is held for up to APP_HOLD
+# polls waiting for its label (netifyd -> map file -> this poll takes a
+# moment); if none arrives its bytes go to "[<class>]" (e.g. "[WEB]") so the
+# application totals always add up to the class totals. Without apps.map
+# everything simply lands in the "[<class>]" buckets.
+# Unlabelled flows first try a learned service name: the netifyd label seen
+# for the same protocol/port (e.g. udp/123 -> "ntp"), used only while that
+# label is unambiguous; otherwise the "[<class>]" bucket. This keeps one
+# service from appearing twice ("ntp" and "[NTP]").
+#
+# Per-device view: every flow delta is also added to the LAN device that
+# owns the flow (initiator = original source; for WAN-initiated flows the
+# port-forward target = source of the reply tuple). Devices are identified by
+# MAC via trafficchart-hosts (neighbour table + DHCP names), so IPv4 and all
+# IPv6 (privacy) addresses of one host end up in one device; unknown MACs
+# fall back to the IP address.
+#
+# Why an IPv4 client's IPv6 (privacy) address can show up as its OWN device
+# instead of folding into the same MAC: with NSS hardware offload, once a
+# flow is fast-pathed its packets stop reaching the kernel entirely, so the
+# kernel's IPv6 Neighbour Unreachability Detection never sees confirming
+# traffic for that address, times it out (STALE -> FAILED) and drops it from
+# "ip neigh show" - even though the device is still actively sending via the
+# hardware fast path. The next new flow from that (now unresolved) address is
+# then keyed by the raw IPv6 address instead of the MAC. To fix this, every
+# raw-IPv6 device key seen here is remembered in v6seen[] and, every
+# refresh_hosts() cycle, written to OUT_DIR/unresolved_v6 (see
+# write_unresolved()) BEFORE trafficchart-hosts runs; that script pings each
+# address, which makes the kernel re-run Neighbour Discovery, so the
+# following "ip neigh show" has a fresh entry and the address folds back into
+# the right MAC-keyed device again. Bytes already booked under the old
+# IP-keyed device are not retroactively merged - this only prevents the
+# split from recurring going forward.
+#
+# Live flows: per-flow smoothed rate (EMA over the polls); the 25 busiest
+# flows are published with device, application, destination and class.
+#
+# Destinations ("hosts"): netifyd supplies the SNI / DNS-cache host name of a
+# flow (3rd column of apps.map); it is folded to the registrable domain
+# (rr4.sn-x.googlevideo.com -> googlevideo.com). Flows without a name use the
+# remote IP.
+#
+# Per-device top applications: cumulative device x application matrix, the
+# 10 biggest applications of every device are published with the device.
+#
+# History: three resolutions, all computed from the full totals (not from each other):
+#   5m  every HIST_SEC seconds (default 300)       HIST_KEEP       buckets (288 = 24 h)
+#   1h  every full local hour                      HIST_HOUR_KEEP  buckets (192 = 8 days)
+#   1d  every local midnight                       HIST_DAY_KEEP   buckets (400 days)
+# Each bucket holds the deltas of the top applications / devices / destinations,
+# plus the shaper's dropped/ECN packet deltas of that period (see "sh" below).
+# They are kept in RAM and mirrored to $OUT_DIR/history.json, history_1h.json,
+# history_1d.json (reloaded when the daemon restarts).
+#
+# Shaper health in the history ("sh" key of each bucket, {"rx":[drop,ecn,peak_backlog_bytes],"tx":[...]}):
+# (the backlog is momentary, so each open bucket keeps the highest value seen at a poll)
+# trafficchart-tc additionally prints the shaper qdiscs' CUMULATIVE dropped-packet
+# and ECN-mark counters (tc_shaper_drops() in trafficchart-common), read in the
+# same loop iteration as the byte counters (tc_update() below). This daemon turns
+# them into per-poll deltas the same way tc bytes become tc_rx_rate/tc_tx_rate,
+# and hist_close() turns the running per-poll sums into a per-bucket delta the
+# same way it already does for aib/aob etc. A history full of application/device
+# byte totals but no idea when the link was actually congested (drops, ECN) was
+# the main thing "lost" in the old History tab - this puts it back.
+#
+# Persistence (option persist_dir, empty = off): the buckets are additionally appended
+# to PERSIST_DIR/history-{5m,1h,1d}.jsonl every PERSIST_SEC seconds (only the new
+# buckets, so flash wear stays tiny; the files are rewritten when they got twice as
+# long as needed) and reloaded after a reboot. PERSIST_DIR may list several targets
+# (space separated, e.g. a NAS mount and a USB stick): all usable targets are written
+# (mirrors). An unusable one is retried; when it is back it gets what it missed and
+# what it holds is merged in. PERSIST_MOUNT (optional, list): a target below one of
+# these paths is only used while that path is a mount point (otherwise mkdir would
+# create the directory on the flash below a mount that is not there yet). Every access
+# runs under "timeout PERSIST_TIMEOUT" so a hanging share cannot block the daemon for
+# longer. When the service is stopped (also on reboot / restart) the init script asks
+# the daemon (stop.req) to close the open buckets as partial buckets and flush them, so
+# nothing is lost on a clean stop; a power failure loses at most PERSIST_SEC seconds
+# plus the open bucket.
+# Bucket boundaries of 1h / 1d are only used while the clock is plausible.
+#
+# History reset (reset.req, separate from a service restart): luci.trafficchart's
+# "reset_history" ubus call touches $OUT_DIR/reset.req. This daemon checks for it once
+# per poll (same mechanism as stop.req) and, if present, clears the cumulative
+# application/device/destination/shaper totals and the in-RAM history of all three
+# tiers (see hist_reset()), then keeps running - no procd bounce, no re-attaching of
+# persistence targets, live per-flow tracking (and so the "top flows" list) is
+# unaffected. Buckets already written to a persistent storage path are left alone
+# (only the RAM view is cleared); delete those files yourself if you also want the
+# on-disk archive gone. Before this, the only way to reset the totals shown on the
+# page was "Restart service", which also bounces the whole daemon.
+#
+# Router-originated traffic (e.g. a stream proxy running on the router):
+# such flows have the router as source, so they used to be ignored, while
+# the LAN device that watches the stream only talks to the router (LAN-local,
+# not WAN traffic) - the stream was invisible for that device. Now
+#   - router-originated WAN flows are counted (device "Router", class from the
+#     ct mark, application/destination from netifyd like any other flow);
+#   - LAN device -> router flows are NOT counted as WAN traffic, but their
+#     volume is tracked per device ("via_in"/"via_out") and used to
+#     ATTRIBUTE the router's WAN traffic: router WAN volume (per application)
+#     and per-device delivery are kept in two pools and matched within a
+#     sliding window of ATTR_WIN seconds, regardless of which poll each fell
+#     into (a segment proxy downloads upstream first and serves the client in
+#     a later poll). Per poll min(router pool, device pool) is credited to the
+#     devices. Only flows to real router services take part: DNS, DHCP, NTP,
+#     SSH and the LuCI page itself (ATTR_SKIP_PORTS) never pull router traffic
+#     onto a device, and only router applications that are a real part of the
+#     router's WAN volume (ATTR_MIN, ATTR_SHARE) are candidates - background
+#     traffic of the router (netifyd, updates ...) stays on the Router device.
+#     Unmatched router bytes stay on the Router device as well.
+#
+# Rates: every entry (application / device / destination) also carries
+# "in_bps" / "out_bps" = bytes per second averaged over the last RATE_WIN
+# seconds (default 10), measured on the clock of THIS daemon. A plain moving
+# average over a fixed window is unbiased: a new stream reaches its real rate
+# after exactly one window and drops to 0 exactly one window after it stopped
+# (the old browser side EMA needed ~50 s to show 90 % of a new stream). The link
+# rate comes from the tc qdisc counters (helper trafficchart-tc), read in the SAME
+# loop iteration and timed with the same clock, so the numbers of one sample
+# belong together no matter how many browser tabs are open or how late they poll.
+# Traffic that the shaper carries but conntrack accounting does not (WAN traffic to
+# router services, inbound packets the firewall drops, multicast, control frames,
+# flows the classifier above skips) is reported as "un_rx_*" / "un_tx_*" and shown as
+# its own "Not attributed" row instead of being spread over the real applications:
+#     d(tc bytes) - d(conntrack bytes) - L2 header * d(conntrack packets)
+# The link layer header (tc counts it, conntrack does not) is measured automatically,
+# see L2_OVERHEAD below. LAN-local flows never reach the WAN shaper and are not part
+# of it. Rates over UN_WIN seconds (download: UN_WIN_RX, longer, because the counter
+# sync of big NSS downloads jitters more). Reported is the SMALLER of that short-window rate
+# and a UN_WIN_LONG rate (default 300s, 0 = off): a start/end timing offset between the shaper
+# and conntrack counters shows up as a swing in the short window that nets out to about zero
+# over the long one, so it is suppressed; a persistently missing volume is not.
+#
+# Bounded memory: applications (APP_MAX), tooltip matrices (MX_MAX, PAIR_MAX) have a
+# size limit; when one is full, long idle entries are dropped first (TBL_IDLE_*).
+#
+# apps.map: trafficchart-apps bumps apps.map.ver after every write; the map is only
+# re-read when that changed.
+#
+# TOOLTIPS (default 1): 0 disables the per-flow tooltip-matrix bookkeeping (application x
+# destination, destination x device, device x application - the "top applications" /
+# "top destinations" lists in the Live tabs' tooltips). Real CPU cost, paid on every
+# accounted flow delta regardless of whether tooltip_every ever renders it. Totals and
+# the History tab are computed independently and are NOT affected by this flag.
+#
+# Environment overrides (mainly for testing): CT_FILE OUT_DIR INTERVAL
+# BULK_BYTES V6HELPER AWK APP_HOLD HOSTS_HELPER HIST_SEC HIST_KEEP ATTR_WIN BIRTH_MAX GONE_GRACE
+# ATTR_PORTS ATTR_SKIP_PORTS ATTR_MIN ATTR_SHARE ATTR_TOL ATTR_MAX_APPS ATTR_MAX_DEVICES TOOLTIPS TC_STATS
+# ADAPT_INTERVAL INTERVAL_MAX ADAPT_BUDGET TOOLTIP_EVERY HOSTS_REFRESH_SEC GUA_REFRESH_SEC
+# L2_OVERHEAD L2_INIT L2_CANDIDATES CAL_WIN CAL_KEEP CAL_MIN CAL_PCTL CAL_TOL CAL_MAX_PKT
+# CAL_MIN_PKTS UN_WIN UN_WIN_RX UN_WIN_LONG APP_MAX MX_MAX PAIR_MAX TBL_IDLE_LONG TBL_IDLE_SHORT
+# TC_HELPER RATE_WIN PERSIST_DIR PERSIST_MOUNT PERSIST_SEC PERSIST_TIMEOUT HIST_HOUR_KEEP HIST_DAY_KEEP
+# HOUR_SEC DAY_SEC (tier lengths, testing only) TC_COMMON HOST_MAX
+#
+# Every variable can also be set in /etc/config/trafficchart (option = variable name in
+# lower case, see trafficchart.config). The environment wins over UCI.
+
+TC_COMMON="${TC_COMMON:-/usr/libexec/trafficchart-common}"
+if [ -r "$TC_COMMON" ]; then
+    . "$TC_COMMON"
+    tc_cfg PROFILE low-cpu string
+    PROFILE_INTERVAL=2
+    PROFILE_ADAPT_INTERVAL=1
+    PROFILE_INTERVAL_MAX=10
+    PROFILE_ADAPT_BUDGET=0.30
+    PROFILE_TOOLTIP_EVERY=0
+    PROFILE_HOSTS_REFRESH_SEC=60
+    PROFILE_GUA_REFRESH_SEC=120
+    PROFILE_RATE_WIN=10
+    PROFILE_BULK_BYTES=314572800
+    PROFILE_MX_MAX=2000
+    PROFILE_PAIR_MAX=1000
+    case "$PROFILE" in
+        realtime)
+            PROFILE_INTERVAL=1;            PROFILE_ADAPT_INTERVAL=1;     PROFILE_INTERVAL_MAX=5
+            PROFILE_ADAPT_BUDGET=0.15;     PROFILE_TOOLTIP_EVERY=1;      PROFILE_HOSTS_REFRESH_SEC=30
+            PROFILE_GUA_REFRESH_SEC=60;    PROFILE_RATE_WIN=5;           PROFILE_BULK_BYTES=314572800
+            PROFILE_MX_MAX=4000;           PROFILE_PAIR_MAX=2000
+            ;;
+        balanced)
+            PROFILE_INTERVAL=2;            PROFILE_ADAPT_INTERVAL=1;     PROFILE_INTERVAL_MAX=10
+            PROFILE_ADAPT_BUDGET=0.30;     PROFILE_TOOLTIP_EVERY=0;      PROFILE_HOSTS_REFRESH_SEC=60
+            PROFILE_GUA_REFRESH_SEC=120;   PROFILE_RATE_WIN=10;          PROFILE_BULK_BYTES=314572800
+            PROFILE_MX_MAX=2000;           PROFILE_PAIR_MAX=1000
+            ;;
+        low-cpu)
+            PROFILE_INTERVAL=4;            PROFILE_ADAPT_INTERVAL=1;     PROFILE_INTERVAL_MAX=20
+            PROFILE_ADAPT_BUDGET=0.45;     PROFILE_TOOLTIP_EVERY=2;      PROFILE_HOSTS_REFRESH_SEC=180
+            PROFILE_GUA_REFRESH_SEC=300;   PROFILE_RATE_WIN=10;          PROFILE_BULK_BYTES=314572800
+            PROFILE_MX_MAX=1000;           PROFILE_PAIR_MAX=500
+            ;;
+        very-low-cpu)
+            PROFILE_INTERVAL=6;            PROFILE_ADAPT_INTERVAL=1;     PROFILE_INTERVAL_MAX=30
+            PROFILE_ADAPT_BUDGET=0.55;     PROFILE_TOOLTIP_EVERY=3;      PROFILE_HOSTS_REFRESH_SEC=300
+            PROFILE_GUA_REFRESH_SEC=600;   PROFILE_RATE_WIN=10;          PROFILE_BULK_BYTES=314572800
+            PROFILE_MX_MAX=500;            PROFILE_PAIR_MAX=250
+            ;;
+        *)
+            PROFILE=balanced
+            PROFILE_INTERVAL=2;            PROFILE_ADAPT_INTERVAL=1;     PROFILE_INTERVAL_MAX=10
+            PROFILE_ADAPT_BUDGET=0.30;     PROFILE_TOOLTIP_EVERY=0;      PROFILE_HOSTS_REFRESH_SEC=60
+            PROFILE_GUA_REFRESH_SEC=120;   PROFILE_RATE_WIN=10;          PROFILE_BULK_BYTES=314572800
+            PROFILE_MX_MAX=2000;           PROFILE_PAIR_MAX=1000
+            ;;
+    esac
+    tc_cfg INTERVAL "$PROFILE_INTERVAL" int
+    tc_cfg ADAPT_INTERVAL "$PROFILE_ADAPT_INTERVAL" int
+    tc_cfg INTERVAL_MAX "$PROFILE_INTERVAL_MAX" int
+    tc_cfg ADAPT_BUDGET "$PROFILE_ADAPT_BUDGET" num
+    tc_cfg TOOLTIP_EVERY "$PROFILE_TOOLTIP_EVERY" int
+    tc_cfg HOSTS_REFRESH_SEC "$PROFILE_HOSTS_REFRESH_SEC" int
+    tc_cfg GUA_REFRESH_SEC "$PROFILE_GUA_REFRESH_SEC" int
+    tc_cfg RATE_WIN "$PROFILE_RATE_WIN" int
+    tc_cfg BULK_BYTES "$PROFILE_BULK_BYTES" int
+    tc_cfg HIST_SEC 300 int;          tc_cfg HIST_KEEP 288 int
+    tc_cfg HIST_HOUR_KEEP 192 int;    tc_cfg HIST_DAY_KEEP 400 int
+    tc_cfg PERSIST_DIR "";            tc_cfg PERSIST_MOUNT "";         tc_cfg PERSIST_SEC 3600 int
+    tc_cfg PERSIST_TIMEOUT 10 int
+    tc_cfg HOST_MAX 200 int
+    tc_cfg APP_HOLD 3 int;            tc_cfg APP_MAX 400 int;          tc_cfg MX_MAX "$PROFILE_MX_MAX" int
+    tc_cfg PAIR_MAX "$PROFILE_PAIR_MAX" int;   tc_cfg TBL_IDLE_LONG 3600 int;   tc_cfg TBL_IDLE_SHORT 600 int
+    tc_cfg BIRTH_MAX 1073741824 int;  tc_cfg GONE_GRACE 5 int
+    tc_cfg L2_OVERHEAD auto l2;       tc_cfg L2_INIT 18 int;           tc_cfg L2_CANDIDATES "0 14 18 22 26" list
+    tc_cfg CAL_WIN 30 int;            tc_cfg CAL_KEEP 60 int;          tc_cfg CAL_MIN 8 int
+    tc_cfg CAL_PCTL 25 int;           tc_cfg CAL_MAX_PKT 400 int;      tc_cfg CAL_MIN_PKTS 500 int
+    tc_cfg CAL_TOL 1 int;             tc_cfg UN_WIN 30 int;            tc_cfg UN_WIN_RX 60 int
+    tc_cfg UN_WIN_LONG 300 int
+    tc_cfg TOOLTIPS 1 int
+    tc_cfg TC_STATS 1 int
+    tc_cfg ATTR_TOTALS 1 int;         tc_cfg ATTR_TOPAPPS 0 int;       tc_cfg ATTR_PORTS 9999 list
+    tc_cfg ATTR_SKIP_PORTS "22 53 67 68 80 123 443 853 5353 5355" list
+    tc_cfg ATTR_WIN 60 int;           tc_cfg ATTR_TOL 0.6 num;         tc_cfg ATTR_MIN 262144 int
+    tc_cfg ATTR_SHARE 0.25 num;       tc_cfg ATTR_MAX_APPS 64 int;     tc_cfg ATTR_MAX_DEVICES 64 int
+fi
+
+CT_FILE="${CT_FILE:-/proc/net/nf_conntrack}"
+OUT_DIR="${OUT_DIR:-/tmp/trafficchart}"
+export OUT_DIR   # trafficchart-hosts (spawned via awk's pipe) needs this to find unresolved_v6
+V6HELPER="${V6HELPER:-/usr/libexec/trafficchart-v6prefixes}"
+AWK="${AWK:-awk}"
+APP_HOLD="${APP_HOLD:-3}"
+HOSTS_HELPER="${HOSTS_HELPER:-/usr/libexec/trafficchart-hosts}"
+HIST_SEC="${HIST_SEC:-300}"
+HIST_KEEP="${HIST_KEEP:-288}"
+BIRTH_MAX="${BIRTH_MAX:-1073741824}"   # bytes: a flow first seen (or restarted) with more than this in ONE poll cannot be new - it is adopted as baseline instead of booked
+GONE_GRACE="${GONE_GRACE:-5}"          # polls a flow may be missing (short procfs read, mark flip) before its state is dropped
+ATTR_WIN="${ATTR_WIN:-60}"   # seconds: window in which router WAN volume and client delivery are matched
+# Attribution of router WAN traffic to LAN devices (see "Router-originated traffic" above):
+# LAN->router flows to these destination ports are infrastructure (SSH, DNS, DHCP,
+# NTP, DoT, mDNS/LLMNR, LuCI on 80/443) and never count as "device is being served
+# by a router service". Remove 80/443 if the stream proxy itself listens there.
+# ATTR_SKIP_PORTS was loaded above.
+# Stricter: if set, ONLY LAN->router flows to these ports count (ATTR_SKIP_PORTS is then ignored).
+# Port of the stream proxy on the router; empty = every port except ATTR_SKIP_PORTS.
+ # ATTR_PORTS, ATTR_TOTALS, ATTR_TOPAPPS, RATE_WIN and UN_WIN were loaded above.
+TC_HELPER="${TC_HELPER:-/usr/libexec/trafficchart-tc}"   # prints "<rx_bytes> <tx_bytes> <rx_drop> <rx_ecn> <tx_drop> <tx_ecn>" of the shapers; without it the page falls back to browser side rates and no shaper history
+[ -x "$TC_HELPER" ] || TC_HELPER=""   # not installed: no link rate, the page falls back to browser side rates
+# TC_STATS (option tc_stats, default 1): trafficchart-tc itself forks "tc -s qdisc show"
+# once per RX device and once per TX device (twice that with multi-WAN), PLUS
+# tc_resolve()'s own config_load/config_foreach over uci sqm - all of that on every
+# single INTERVAL poll of THIS daemon, independent of whether a browser tab is even
+# open (unlike luci.trafficchart's own tc calls, which only run on an actual page
+# request and are 1s-cached). 0 disables it the same way a missing trafficchart-tc
+# binary already does: no daemon-side link rate, no "Not attributed" ring segment, and
+# the History tab's shaper drop/ECN/backlog row stays empty. The live shaper health
+# line at the top of the page (drops/ECN sparkline) is unaffected either way - that one
+# always comes from luci.trafficchart's own per-request tc call, not from this daemon.
+TC_STATS="${TC_STATS:-1}"
+[ "$TC_STATS" = "1" ] || TC_HELPER=""
+ # ATTR_TOL, ATTR_MIN, ATTR_SHARE, ATTR_MAX_APPS and ATTR_MAX_DEVICES were loaded above.
+# Bytes per packet that the shaper (tc) counts but conntrack does not: the link layer
+# header (Ethernet 14, +4 VLAN, +8 PPPoE). Without this the "not attributed" estimate
+# is dominated by it wherever packets are small (the upload of a download is almost
+# only 52 byte ACKs: 18/70 = ~26 %).
+#   auto (default)  measured: per CAL_WIN seconds window the difference "tc bytes -
+#                   conntrack bytes" per conntrack packet is computed, only for windows
+#                   dominated by small packets (mean packet size below CAL_MAX_PKT, where
+#                   a header is a big share and clock jitter of the counters is small).
+#                   Real missing traffic can only ADD to that number, so the CAL_PCTL-th
+#                   percentile of the last CAL_KEEP windows is taken, and the result is
+#                   floored to a real header size from L2_CANDIDATES (raw value + CAL_TOL):
+#                   a constant stream that conntrack does not see (VPN server on the
+#                   router, IPTV ...) could otherwise be mistaken for a bigger header and
+#                   be hidden. If the raw value is clearly above the used one, that
+#                   difference IS unattributed traffic (the page says so). L2_INIT is used
+#                   until CAL_MIN windows are available.
+#   <number>        fixed bytes per packet (0 = old behaviour: everything shows up as
+#                   "not attributed")
+case "$L2_OVERHEAD" in auto|[0-9]|[0-9][0-9]) ;; *) L2_OVERHEAD=auto ;; esac
+ # L2_INIT, L2_CANDIDATES, calibration settings, UN_WIN_RX and table limits were loaded above.
+
+# --- persistent history: validate the settings (they end up in shell commands of the daemon) ---
+ # Persistent/history settings and HOST_MAX were loaded above.
+HOUR_SEC="${HOUR_SEC:-3600}"; DAY_SEC="${DAY_SEC:-86400}"
+# PERSIST_DIR and PERSIST_MOUNT are space separated lists of absolute paths (letters, digits and
+# . _ - / only, no trailing slash); an invalid entry is dropped and logged
+_clean() {
+    _out=""
+    for _w in $1; do
+        _w2="${_w%/}"
+        case "$_w2" in
+            /?*) case "$_w2" in *[!A-Za-z0-9._/-]*) _w2="" ;; esac ;;
+            *) _w2="" ;;
+        esac
+        if [ -z "$_w2" ]; then
+            logger -t trafficchart "config: ignoring invalid path '$_w' (absolute path of letters, digits and . _ - / only)" 2>/dev/null
+        else
+            _out="${_out:+$_out }$_w2"
+        fi
+    done
+    echo "$_out"
+}
+PERSIST_DIR=$(_clean "$PERSIST_DIR")
+PERSIST_MOUNT=$(_clean "$PERSIST_MOUNT")
+# every access to a target (a NAS may hang) runs under "timeout"; TOUT4 = shorter one used
+# while the service is being stopped
+case "$PERSIST_TIMEOUT" in ''|*[!0-9]*) PERSIST_TIMEOUT=10 ;; esac
+[ "$PERSIST_TIMEOUT" -ge 3 ] || PERSIST_TIMEOUT=3
+[ "$PERSIST_TIMEOUT" -le 120 ] || PERSIST_TIMEOUT=120
+if command -v timeout >/dev/null 2>&1; then
+    TOUT="timeout $PERSIST_TIMEOUT"; TOUT4="timeout 4"
+else
+    TOUT=""; TOUT4=""
+    [ -n "$PERSIST_DIR" ] && logger -t trafficchart "no timeout applet: a hanging network share could stall the daemon - use a soft mount" 2>/dev/null
+fi
+case "$PERSIST_SEC" in ''|*[!0-9]*) PERSIST_SEC=3600 ;; esac
+[ "$PERSIST_SEC" -ge 60 ] || PERSIST_SEC=60
+case "$HIST_HOUR_KEEP" in ''|*[!0-9]*|0) HIST_HOUR_KEEP=192 ;; esac
+case "$HIST_DAY_KEEP" in ''|*[!0-9]*|0) HIST_DAY_KEEP=400 ;; esac
+
+mkdir -p "$OUT_DIR" || exit 1
+
+# --- process control: the init script stops us with SIGTERM; the wrapper turns that into
+# a stop request file the daemon polls, so it can flush its history before it exits.
+# A previous instance that is still flushing is waited for (max 20 s), so the new one
+# does not read the history before the old one has written it.
+STOPFILE="$OUT_DIR/stop.req"
+# Separate, lighter request: clear cumulative totals + in-RAM history without
+# restarting the daemon (luci.trafficchart's "reset_history" ubus call writes this;
+# see the "History reset" header comment above).
+RESETFILE="$OUT_DIR/reset.req"
+PIDFILE="$OUT_DIR/agg.pid"
+if [ -r "$PIDFILE" ]; then
+    _old=$(cat "$PIDFILE" 2>/dev/null)
+    case "$_old" in ''|*[!0-9]*) _old="" ;; esac
+    if [ -n "$_old" ] && [ "$_old" != "$$" ]; then
+        _i=0
+        while [ "$_i" -lt 20 ] && grep -q trafficchart-agg "/proc/$_old/cmdline" 2>/dev/null; do
+            sleep 1; _i=$((_i + 1))
+        done
+    fi
+fi
+rm -f "$STOPFILE"
+echo $$ > "$PIDFILE"
+
+# The byte/packet counters in /proc/net/nf_conntrack only exist with conntrack
+# accounting. It is usually already on (NSS builds), but not on every stock
+# OpenWrt; flows created before it was switched on simply start counting later.
+ACCT=/proc/sys/net/netfilter/nf_conntrack_acct
+[ -w "$ACCT" ] && [ "$(cat "$ACCT" 2>/dev/null)" != "1" ] && echo 1 > "$ACCT"
+
+$AWK -v CT_FILE="$CT_FILE" -v OUT="$OUT_DIR" -v INTERVAL="$INTERVAL" \
+    -v PERSIST_DIR="$PERSIST_DIR" -v PERSIST_MOUNT="$PERSIST_MOUNT" -v PERSIST_SEC="$PERSIST_SEC" -v TOUT="$TOUT" -v TOUT4="$TOUT4" \
+    -v HIST_HOUR_KEEP="$HIST_HOUR_KEEP" -v HIST_DAY_KEEP="$HIST_DAY_KEEP" -v HOUR_SEC="$HOUR_SEC" -v DAY_SEC="$DAY_SEC" \
+    -v WPID="$$" -v STOPFILE="$STOPFILE" -v RESETFILE="$RESETFILE" -v PIDFILE="$PIDFILE" \
+    -v BULK_BYTES="$BULK_BYTES" -v V6HELPER="$V6HELPER" -v APP_HOLD="$APP_HOLD" \
+    -v MAPFILE="$OUT_DIR/apps.map" -v HOSTS_HELPER="$HOSTS_HELPER" \
+    -v HIST_SEC="$HIST_SEC" -v HIST_KEEP="$HIST_KEEP" -v ATTR_WIN="$ATTR_WIN" -v BIRTH_MAX="$BIRTH_MAX" -v GONE_GRACE="$GONE_GRACE" \
+    -v ADAPT_INTERVAL="$ADAPT_INTERVAL" -v INTERVAL_MAX="$INTERVAL_MAX" -v ADAPT_BUDGET="$ADAPT_BUDGET" -v TOOLTIP_EVERY="$TOOLTIP_EVERY" -v HOSTS_REFRESH_SEC="$HOSTS_REFRESH_SEC" -v GUA_REFRESH_SEC="$GUA_REFRESH_SEC" \
+    -v TOOLTIPS="$TOOLTIPS" \
+    -v RATE_WIN="$RATE_WIN" -v UN_WIN="$UN_WIN" -v TC_HELPER="$TC_HELPER" -v ATTR_TOL="$ATTR_TOL" -v ATTR_TOPAPPS="$ATTR_TOPAPPS" -v ATTR_TOTALS="$ATTR_TOTALS" -v ATTR_SKIP_PORTS="$ATTR_SKIP_PORTS" -v ATTR_PORTS="$ATTR_PORTS" -v ATTR_MIN="$ATTR_MIN" -v ATTR_SHARE="$ATTR_SHARE" -v ATTR_MAX_APPS="$ATTR_MAX_APPS" -v ATTR_MAX_DEVICES="$ATTR_MAX_DEVICES" -v L2_OVERHEAD="$L2_OVERHEAD" -v L2_INIT="$L2_INIT" -v L2_CANDIDATES="$L2_CANDIDATES" -v CAL_TOL="$CAL_TOL" -v CAL_WIN="$CAL_WIN" -v CAL_KEEP="$CAL_KEEP" -v CAL_MIN="$CAL_MIN" -v CAL_PCTL="$CAL_PCTL" -v CAL_MAX_PKT="$CAL_MAX_PKT" -v CAL_MIN_PKTS="$CAL_MIN_PKTS" \
+    -v HOST_MAX="$HOST_MAX" -v UN_WIN_RX="$UN_WIN_RX" -v UN_WIN_LONG="$UN_WIN_LONG" -v APP_MAX="$APP_MAX" -v MX_MAX="$MX_MAX" -v PAIR_MAX="$PAIR_MAX" -v TBL_IDLE_LONG="$TBL_IDLE_LONG" -v TBL_IDLE_SHORT="$TBL_IDLE_SHORT" -v MAPVER="$OUT_DIR/apps.map.ver" '
+# "LAN-side" / non-WAN address? (RFC1918, loopback, link-local, multicast,
+# ULA, plus the dynamically discovered LAN GUA prefixes in "gua").
+# IPv6 addresses in /proc/net/nf_conntrack are fully expanded (%pI6).
+function islocal(a) {
+    if (a ~ /^(192\.168\.|10\.|127\.|169\.254\.|255\.)/) return 1
+    if (a ~ /^172\.(1[6-9]|2[0-9]|3[01])\./) return 1
+    if (a ~ /^(22[4-9]|23[0-9])\./) return 1
+    if (a ~ /^(fd|fe[89ab]|ff)/) return 1
+    if (a == "::1" || a ~ /^0000:0000:0000:0000:0000:0000:0000:0001$/) return 1
+    if (gua != "" && a ~ gua) return 1
+    # IPv6 host in the neighbour table: a LAN host even if its address comes from
+    # an older delegated prefix (ISP prefix changes leave long-lived addresses
+    # behind that the single current prefix in gua does not match)
+    if (index(a, ":") > 0 && (a in hmac)) return 1
+    return 0
+}
+
+function uptime(   l, a) {
+    l = ""
+    getline l < "/proc/uptime"
+    close("/proc/uptime")
+    split(l, a, " ")
+    return a[1] + 0
+}
+
+# LAN GUA prefix regex, refreshed periodically (DHCPv6-PD can renumber)
+function refresh_gua(   rx) {
+    rx = ""
+    if ((V6HELPER | getline rx) > 0) gua = rx; else gua = ""
+    close(V6HELPER)
+}
+
+# Addresses recorded by dev_key() as "IPv6, no MAC known" that are still
+# recent (V6_STALE_POLLS) and not meanwhile resolved go to OUT_DIR/unresolved_v6,
+# for trafficchart-hosts to actively re-resolve just before the next
+# refresh_hosts() reads "ip neigh show" (see the header comment for why).
+function write_unresolved(   k, tmp, wrote) {
+    tmp = UNRESOLVED_FILE ".tmp"
+    wrote = 0
+    printf "" > tmp
+    for (k in v6seen) {
+        if (n - v6seen[k] > V6_STALE_POLLS || (k in hmac)) { delete v6seen[k]; continue }
+        print k > tmp
+        wrote++
+    }
+    close(tmp)
+    if (wrote > 0) system("mv -f " tmp " " UNRESOLVED_FILE)
+    else system("rm -f " tmp " " UNRESOLVED_FILE)
+}
+
+# ip -> mac, mac -> name (refreshed every few polls, see BEGIN)
+function refresh_hosts(   l, f, nm) {
+    split("", hmac); split("", hname); split("", rtr)
+    nm = 0
+    while ((HOSTS_HELPER | getline l) > 0) {
+        split(l, f, "\t")
+        if (f[1] == "I") { hmac[f[2]] = f[3]; nm++ }
+        else if (f[1] == "N") hname[f[2]] = f[3]
+        else if (f[1] == "R") rtr[f[2]] = 1
+    }
+    close(HOSTS_HELPER)
+}
+
+function dev_key(lan, src, rsrc,   addr, mac, key, nm) {
+    addr = lan ? src : rsrc
+    if (addr == "") addr = "unknown"
+    # A device is always a LAN host. The router itself (any of its addresses)
+    # or a public address (e.g. WAN client -> router service: the reply source
+    # is the router WAN IP) is booked on the "Router" device instead of
+    # showing up as a fake device named after an IP.
+    if ((addr in rtr) || (addr != "unknown" && !islocal(addr))) return router_key()
+    mac = (addr in hmac) ? hmac[addr] : ""
+    # No MAC known for this address: if it is IPv6-shaped, remember it so
+    # write_unresolved() can hand it to trafficchart-hosts for active
+    # re-resolution (see the header comment above for why this happens).
+    if (mac == "" && index(addr, ":") > 0) v6seen[addr] = n
+    key = (mac != "") ? mac : addr
+    if (!(key in dseen) && ndev >= 256) key = "(other)"
+    if (!(key in dseen)) { dseen[key] = 1; ndev++ }
+    if (mac != "" && (mac in hname)) {
+        nm = hname[mac]; gsub(/[^A-Za-z0-9._ -]/, "_", nm); dname[key] = nm
+    }
+    # keep an IPv4 address for display if there is one
+    if (addr !~ /:/) dvip[key] = addr
+    return key
+}
+
+# Fold a temporarily IPv6-address-keyed device ("old", e.g. a raw address
+# used as the device key because no MAC was known yet - see dev_key() and the
+# NSS-offload comment near v6seen above) into its real MAC-keyed device
+# ("new") once the address resolves. Called from reconcile_v6_devices() right
+# after refresh_hosts() picks up a fresh neighbour-table entry.
+#
+# This does NOT retroactively fix history buckets already closed under the
+# old key (those are already written out and would need re-writing history
+# files, not just in-RAM state) - only the cumulative totals, per-flow rate
+# rings, and the tooltip/top-applications tables are merged, so from this
+# point on the device reports as one device instead of splitting again.
+function dev_merge(old, new,   i, j, k, T, pk2) {
+    if (old == new || !(old in dseen)) return
+    if (!(new in dseen)) { dseen[new] = 1; ndev++ }
+    dib[new] += dib[old]; dob[new] += dob[old]
+    dipk[new] += dipk[old]; dopk[new] += dopk[old]
+    dib_rt[new] += dib_rt[old]; dob_rt[new] += dob_rt[old]
+    dvi[new] += dvi[old]; dvo[new] += dvo[old]
+    if (!(new in dname) && (old in dname)) dname[new] = dname[old]
+    if (!(new in dvip) && (old in dvip)) dvip[new] = dvip[old]
+
+    # rate ring buffers: fold old into new so the rate does not reset to 0
+    for (i = 0; i < RATE_K; i++) {
+        rh_in["d" SUBSEP new, i] += rh_in["d" SUBSEP old, i] + 0
+        rh_out["d" SUBSEP new, i] += rh_out["d" SUBSEP old, i] + 0
+        delete rh_in["d" SUBSEP old, i]; delete rh_out["d" SUBSEP old, i]
+    }
+    delete rt_in["d" SUBSEP old]; delete rt_out["d" SUBSEP old]
+
+    # per-tier history baselines: fold so the next hist_close() delta for
+    # "new" correctly excludes what "old" already contributed this period
+    for (T = 1; T <= 3; T++) {
+        sd_in[T, new] += sd_in[T, old]; sd_out[T, new] += sd_out[T, old]
+        delete sd_in[T, old]; delete sd_out[T, old]
+    }
+
+    # device x application pairs (top-applications-per-device tooltip)
+    for (i = 1; i <= npair; i++) {
+        if (!(i in pdv) || pdv[i] != old) continue
+        pk2 = new SUBSEP pap[i]
+        if ((pk2 in pidx) && pidx[pk2] != i) {
+            j = pidx[pk2]
+            pin[j] += pin[i]; pout[j] += pout[i]
+            delete pidx[old SUBSEP pap[i]]
+            delete pdv[i]; delete pap[i]; delete pin[i]; delete pout[i]; delete plast[i]
+            pfree[++npfree] = i; npair_live--
+        } else {
+            delete pidx[old SUBSEP pap[i]]
+            pdv[i] = new
+            pidx[pk2] = i
+        }
+    }
+
+    # destination x device tooltip matrix (mxb holds the device key there)
+    for (i = 1; i <= mxcnt; i++) {
+        if (!(i in mxt) || mxt[i] != "h" || mxb[i] != old) continue
+        pk2 = "h" SUBSEP mxa[i] SUBSEP new
+        if ((pk2 in mxidx) && mxidx[pk2] != i) {
+            j = mxidx[pk2]
+            mxin[j] += mxin[i]; mxout[j] += mxout[i]
+            delete mxidx["h" SUBSEP mxa[i] SUBSEP old]
+            delete mxt[i]; delete mxa[i]; delete mxb[i]; delete mxin[i]; delete mxout[i]; delete mxlast[i]
+            mxfree[++nmxfree] = i; mxtn["h"]--
+        } else {
+            delete mxidx["h" SUBSEP mxa[i] SUBSEP old]
+            mxb[i] = new
+            mxidx[pk2] = i
+        }
+    }
+
+    delete dib[old]; delete dob[old]; delete dipk[old]; delete dopk[old]
+    delete dib_rt[old]; delete dob_rt[old]; delete dvi[old]; delete dvo[old]
+    delete dname[old]; delete dvip[old]; delete dseen[old]; ndev--
+    glog_msg("merged temporarily IP-keyed device " old " into " new " after address resolution")
+}
+
+# Scan current device keys for ones that are still a raw IPv6 address (the
+# fallback dev_key() uses while no MAC is known) and that have since resolved
+# to a MAC in hmac (freshly refreshed by refresh_hosts() just before this is
+# called) - and fold each one into its real MAC-keyed device. Bounded by the
+# number of distinct devices (capped at 256, see dev_key()), so this is cheap.
+function reconcile_v6_devices(   k, keys, nk, i) {
+    nk = 0
+    for (k in dseen) {
+        if (index(k, ":") == 0) continue           # not an IPv6-shaped key
+        if (!(k in hmac)) continue                 # still unresolved
+        if (hmac[k] == k) continue                 # nothing to do
+        keys[++nk] = k
+    }
+    for (i = 1; i <= nk; i++) dev_merge(keys[i], hmac[keys[i]])
+}
+
+function dev_add(key, lan, d1, d2, q1, q2) {
+    if (lan) { dob[key] += d1; dopk[key] += q1; dib[key] += d2; dipk[key] += q2; dob_rt[key] += d1; dib_rt[key] += d2 }
+    else     { dib[key] += d1; dipk[key] += q1; dob[key] += d2; dopk[key] += q2; dib_rt[key] += d1; dob_rt[key] += d2 }
+}
+
+# display name of a device key
+function dev_label(k) { return (k in dname) ? dname[k] : ((k in dvip) ? dvip[k] : k) }
+
+# registrable domain guess: a.b.googlevideo.com -> googlevideo.com,
+# x.example.co.uk -> example.co.uk; IP literals unchanged
+function regdom(h,   n, p, l, sl) {
+    h = tolower(h)
+    gsub(/[^a-z0-9.:_-]/, "_", h)
+    if (h ~ /^[0-9.]+$/ || index(h, ":") > 0) return h
+    n = split(h, p, ".")
+    if (n <= 2) return h
+    l = p[n]; sl = p[n - 1]
+    if (length(l) == 2 && (sl == "co" || sl == "com" || sl == "org" || sl == "net" || sl == "gov" || sl == "ac" || sl == "edu" || sl == "or" || sl == "ne" || sl == "go"))
+        return p[n - 2] "." sl "." l
+    return sl "." l
+}
+
+# 2a00:1450:4001:0043:0000:... -> 2a00:1450:4001:43:0:...
+function v6short(a,   n, g, i, out) {
+    if (index(a, ":") == 0) return a
+    n = split(a, g, ":")
+    out = ""
+    for (i = 1; i <= n; i++) { sub(/^0+/, "", g[i]); if (g[i] == "") g[i] = "0"; out = out (i > 1 ? ":" : "") g[i] }
+    return out
+}
+
+# Destinations are capped (HOST_MAX distinct names). Before, the 200 slots were used up
+# for good after a while (all later destinations became "(other)" until the next
+# restart). Now, when the table is full, destinations that have been idle for a while
+# are folded into "(other)" and their slot is reused; the totals stay complete.
+function host_fold(k,   o, T, sl, ko, kk) {
+    o = "(other)"
+    if (!(o in hseen)) { hseen[o] = 1; nhost++; hlast[o] = n }
+    hib[o] += hib[k]; hob[o] += hob[k]; hip[o] += hip[k]; hop[o] += hop[k]
+    # the folded bytes that no history bucket has claimed yet must stay unclaimed
+    for (T = 1; T <= 3; T++) {
+        sh_in[T, o] += sh_in[T, k]; sh_out[T, o] += sh_out[T, k]
+        delete sh_in[T, k]; delete sh_out[T, k]
+    }
+    # rate ring: (other) grows by the folded total, its old samples must grow with it
+    ko = "h" SUBSEP o; kk = "h" SUBSEP k
+    for (sl = 0; sl < RATE_K; sl++) {
+        rh_in[ko, sl] += rh_in[kk, sl]; rh_out[ko, sl] += rh_out[kk, sl]
+        delete rh_in[kk, sl]; delete rh_out[kk, sl]
+    }
+    delete rt_in[kk]; delete rt_out[kk]
+    delete hib[k]; delete hob[k]; delete hip[k]; delete hop[k]; delete hlast[k]; delete hseen[k]
+    nhost--
+}
+
+function host_gc(   k, pass, lim, freed) {
+    if (hgc_at == n) return 0
+    hgc_at = n
+    freed = 0
+    for (pass = 1; pass <= 3 && freed < HOST_MAX / 20 + 1; pass++) {
+        lim = (pass == 1) ? IDLE_LONG_P : ((pass == 2) ? IDLE_SHORT_P : IDLE_MIN_P)
+        for (k in hseen) {
+            if (k == "(other)" || n - hlast[k] < lim) continue
+            host_fold(k); freed++
+        }
+    }
+    if (!freed) tbl_full_log("destinations")
+    return freed > 0
+}
+
+function host_add(h, lan, d1, d2, q1, q2) {
+    if (!(h in hseen)) {
+        if (nhost >= HOST_MAX && !host_gc()) h = "(other)"
+        if (!(h in hseen)) { hseen[h] = 1; nhost++ }
+    }
+    hlast[h] = n
+    if (lan) { hob[h] += d1; hop[h] += q1; hib[h] += d2; hip[h] += q2 }
+    else     { hib[h] += d1; hip[h] += q1; hob[h] += d2; hop[h] += q2 }
+    return h
+}
+
+# Tables that could grow without bound get an age based cleanup: when one is full,
+# entries not touched for TBL_IDLE_LONG seconds are dropped (if that frees too little:
+# TBL_IDLE_SHORT). Active entries are never dropped; if nothing can be freed the new
+# entry is skipped (and logged once an hour). The totals per application / device /
+# destination are not affected, only the tooltip lists lose long idle entries.
+function tbl_full_log(what) {
+    if (!(what in tbl_log_at) || n - tbl_log_at[what] >= TBL_LOG_POLLS) { tbl_log_at[what] = n; glog_msg(what " table full and nothing idle to drop - new entries are skipped") }
+}
+
+function pair_gc(   i, pass, lim, freed) {
+    if (pgc_at == n) return 0
+    pgc_at = n
+    freed = 0
+    for (pass = 1; pass <= 2 && freed < PAIR_MAX / 20; pass++) {
+        lim = (pass == 1) ? IDLE_LONG_P : IDLE_SHORT_P
+        for (i = 1; i <= npair; i++) {
+            if (!(i in pdv) || n - plast[i] < lim) continue
+            delete pidx[pdv[i] SUBSEP pap[i]]
+            delete pdv[i]; delete pap[i]; delete pin[i]; delete pout[i]; delete plast[i]
+            pfree[++npfree] = i; npair_live--; freed++
+        }
+    }
+    if (!freed) tbl_full_log("device x application")
+    return freed > 0
+}
+
+function pair_add(dk, a, lan, d1, d2,   pk, i) {
+    pk = dk SUBSEP a
+    if (!(pk in pidx)) {
+        if (npair_live >= PAIR_MAX && !pair_gc()) return
+        if (npfree > 0) i = pfree[npfree--]; else i = ++npair
+        npair_live++
+        pidx[pk] = i; pdv[i] = dk; pap[i] = a; pin[i] = 0; pout[i] = 0
+    }
+    i = pidx[pk]
+    plast[i] = n
+    if (lan) { pout[i] += d1; pin[i] += d2 } else { pin[i] += d1; pout[i] += d2 }
+}
+
+# Generic two-key matrices with in/out bytes:
+#   type "a": application x destination   (tooltip of an application)
+#   type "h": destination x device        (tooltip of a destination)
+function mx_gc(t,   i, pass, lim, freed) {
+    if (mxgc_at[t] == n) return 0
+    mxgc_at[t] = n
+    freed = 0
+    for (pass = 1; pass <= 2 && freed < MX_MAX / 20; pass++) {
+        lim = (pass == 1) ? IDLE_LONG_P : IDLE_SHORT_P
+        for (i = 1; i <= mxcnt; i++) {
+            if (!(i in mxt) || mxt[i] != t || n - mxlast[i] < lim) continue
+            delete mxidx[mxt[i] SUBSEP mxa[i] SUBSEP mxb[i]]
+            delete mxt[i]; delete mxa[i]; delete mxb[i]; delete mxin[i]; delete mxout[i]; delete mxlast[i]
+            mxfree[++nmxfree] = i; mxtn[t]--; freed++
+        }
+    }
+    if (!freed) tbl_full_log(t == "a" ? "application x destination" : "destination x device")
+    return freed > 0
+}
+
+function mx_add(t, x, y, lan, d1, d2,   pk, i) {
+    pk = t SUBSEP x SUBSEP y
+    if (!(pk in mxidx)) {
+        if (mxtn[t] >= MX_MAX && !mx_gc(t)) return
+        if (nmxfree > 0) i = mxfree[nmxfree--]; else i = ++mxcnt
+        mxtn[t]++; mxidx[pk] = i; mxt[i] = t; mxa[i] = x; mxb[i] = y; mxin[i] = 0; mxout[i] = 0
+    }
+    i = mxidx[pk]
+    mxlast[i] = n
+    if (lan) { mxout[i] += d1; mxin[i] += d2 } else { mxin[i] += d1; mxout[i] += d2 }
+}
+
+# keep the N biggest applications / destinations (only those get a tooltip list)
+function kt_ins(k, sc, N,   i) {
+    if (ktn < N || sc > ktsc[ktn]) {
+        if (ktn < N) ktn++
+        i = ktn
+        while (i > 1 && ktsc[i - 1] < sc) { ktsc[i] = ktsc[i - 1]; ktky[i] = ktky[i - 1]; i-- }
+        ktsc[i] = sc; ktky[i] = k
+    }
+}
+
+function mx_top(K,   i, key, tot, n2, j) {
+    split("", xn); split("", xv); split("", xa); split("", xi); split("", xo)
+    for (i = 1; i <= mxcnt; i++) {
+        if (!(i in mxt)) continue
+        if (mxt[i] == "a") { if (!(mxa[i] in keepa)) continue }
+        else if (!(mxa[i] in keeph)) continue
+        tot = mxin[i] + mxout[i]
+        if (tot <= 0) continue
+        key = mxt[i] SUBSEP mxa[i]
+        n2 = xn[key] + 0
+        if (n2 < K || tot > xv[key, n2]) {
+            if (n2 < K) { n2++; xn[key] = n2 }
+            j = n2
+            while (j > 1 && xv[key, j - 1] < tot) {
+                xv[key, j] = xv[key, j - 1]; xa[key, j] = xa[key, j - 1]
+                xi[key, j] = xi[key, j - 1]; xo[key, j] = xo[key, j - 1]; j--
+            }
+            xv[key, j] = tot; xa[key, j] = mxb[i]; xi[key, j] = mxin[i]; xo[key, j] = mxout[i]
+        }
+    }
+}
+
+# ,"top":[["name",in,out],...]  (lab=1: second key is a device key -> display name)
+function top_json(t, name, lab,   key, j, r) {
+    key = t SUBSEP name
+    r = ""
+    for (j = 1; j <= xn[key] + 0; j++)
+        r = r sprintf("%s[\"%s\",%.0f,%.0f]", (j > 1 ? "," : ""), (lab ? dev_label(xa[key, j]) : xa[key, j]), xi[key, j], xo[key, j])
+    return ",\"top\":[" r "]"
+}
+
+function router_key() {
+    if (!("router" in dseen)) { dseen["router"] = 1; ndev++ }
+    dname["router"] = "Router"
+    return "router"
+}
+
+# move volume of router application a from the Router device to device d, booked
+# on the device under the label ta (a generic proxy row, or the real name)
+function pair_xfer(d, a, tin, tout, ta,   i, ri) {
+    pair_add(d, ta, 1, 0, 0)
+    pair_add("router", a, 1, 0, 0)
+    if (!((d SUBSEP ta) in pidx) || !(("router" SUBSEP a) in pidx)) return
+    i = pidx[d SUBSEP ta]; ri = pidx["router" SUBSEP a]
+    pin[i] += tin; pout[i] += tout
+    pin[ri] -= tin; pout[ri] -= tout
+}
+
+# Sliding-window attribution of router WAN traffic to LAN devices.
+# Pools (key = dir SUBSEP poll SUBSEP name, dir 0 = download, 1 = upload):
+#   qr/qrp  router WAN bytes/packets per application, not yet attributed
+#   qv      bytes delivered to a device by a router service, not yet matched
+# Each poll: add the new volumes, match min(router pool, device pool), drop
+# entries older than ATTR_POLLS polls (unmatched router bytes simply stay on
+# the Router device).
+function router_attribute(   a, d) {
+    if (!ATTR_TOTALS) return      # no attribution of router WAN traffic to devices at all
+    for (a in rti) if (rti[a] > 0) { qr[0, n, a] += rti[a]; qrp[0, n, a] += rtip[a] }
+    for (a in rto) if (rto[a] > 0) { qr[1, n, a] += rto[a]; qrp[1, n, a] += rtop[a] }
+    for (d in vdl) if (vdl[d] > 0) qv[0, n, d] += vdl[d]
+    for (d in vul) if (vul[d] > 0) qv[1, n, d] += vul[d]
+    attr_match(0)
+    attr_match(1)
+    attr_expire()
+}
+
+function attr_expire(   k, p) {
+    for (k in qr) { split(k, p, SUBSEP); if (n - p[2] >= ATTR_POLLS) { delete qr[k]; delete qrp[k] } }
+    for (k in qv) { split(k, p, SUBSEP); if (n - p[2] >= ATTR_POLLS) delete qv[k] }
+}
+
+function attr_match(dir,   k, p, a, d, ra, rap, sel, vd, rem, used, cr, cv, picka, pickd, R0, best, ba, bd, s, x, pk, f, hi, i, bv) {
+    split("", ra); split("", rap); split("", sel); split("", vd)
+    split("", rem); split("", used); split("", cr); split("", cv)
+    split("", picka); split("", pickd)
+    R0 = 0
+    for (k in qr) {
+        split(k, p, SUBSEP)
+        if (p[1] != dir) continue
+        ra[p[3]] += qr[k]; rap[p[3]] += qrp[k]; R0 += qr[k]
+    }
+    for (k in qv) {
+        split(k, p, SUBSEP)
+        if (p[1] != dir) continue
+        vd[p[3]] += qv[k]
+    }
+    # Candidates: real router applications only (background traffic stays on "Router")
+    for (i = 1; ATTR_MAX_APPS <= 0 || i <= ATTR_MAX_APPS; i++) {
+        a = ""; bv = -1
+        for (k in ra) if (!(k in picka) && ra[k] >= ATTR_MIN && ra[k] >= R0 * ATTR_SHARE && ra[k] > bv) { a = k; bv = ra[k] }
+        if (a == "") break
+        picka[a] = 1; sel[a] = 1; rem[a] = ra[a]
+    }
+    for (i = 1; ATTR_MAX_DEVICES <= 0 || i <= ATTR_MAX_DEVICES; i++) {
+        d = ""; bv = -1
+        for (k in vd) if (!(k in pickd) && vd[k] >= ATTR_MIN && vd[k] > bv) { d = k; bv = vd[k] }
+        if (d == "") break
+        pickd[d] = 1
+    }
+    for (d in vd) if (!(d in pickd)) delete vd[d]
+
+    # Greedy 1:1 pairing by volume: always take the (application, device) pair
+    # with the smallest relative volume difference; every device only once.
+    # A proxy passes roughly through what it downloads, so upstream bytes of
+    # a stream ~ bytes delivered to exactly the one client that watches it.
+    while (1) {
+        best = 9; ba = ""; bd = ""
+        for (a in sel) {
+            if (rem[a] <= 0) continue
+            for (d in vd) {
+                if (d in used) continue
+                hi = (rem[a] > vd[d]) ? rem[a] : vd[d]
+                s = ((rem[a] > vd[d]) ? rem[a] - vd[d] : vd[d] - rem[a]) / hi
+                if (s < best) { best = s; ba = a; bd = d }
+            }
+        }
+        if (ba == "" || best > ATTR_TOL) break
+        x = (rem[ba] < vd[bd]) ? rem[ba] : vd[bd]
+        pk = rap[ba] * x / ra[ba]
+        if (dir == 0) {
+            pair_xfer(bd, ba, x, 0, (ATTR_TOPAPPS ? ba : "Proxy-Stream (via Router)"))
+            dib[bd] += x; dib["router"] -= x; dipk[bd] += pk; dipk["router"] -= pk
+            dib_rt["router"] -= x
+        } else {
+            pair_xfer(bd, ba, 0, x, (ATTR_TOPAPPS ? ba : "Proxy-Stream (via Router)"))
+            dob[bd] += x; dob["router"] -= x; dopk[bd] += pk; dopk["router"] -= pk
+            dob_rt["router"] -= x
+        }
+        used[bd] = 1; rem[ba] -= x; cr[ba] += x; cv[bd] += x
+    }
+
+    # consume only what was actually credited; the rest stays in the pools
+    for (k in qr) {
+        split(k, p, SUBSEP)
+        if (p[1] != dir || !(p[3] in cr)) continue
+        f = 1 - cr[p[3]] / ra[p[3]]
+        qr[k] *= f; qrp[k] *= f
+        if (f <= 0 || qr[k] < 0.5) { delete qr[k]; delete qrp[k] }
+    }
+    for (k in qv) {
+        split(k, p, SUBSEP)
+        if (p[1] != dir || !(p[3] in cv)) continue
+        f = 1 - cv[p[3]] / vd[p[3]]
+        qv[k] *= f
+        if (f <= 0 || qv[k] < 0.5) delete qv[k]
+    }
+}
+
+# does a LAN->router flow (original tuple "sport=.. dport=..") count as a router
+# service delivering to the device? TCP/UDP only, infrastructure ports excluded
+function attr_port_ok(proto, pp,   dp) {
+    if (proto != "tcp" && proto != "udp") return 0
+    if (!match(pp, /dport=[0-9]+/)) return 0
+    dp = substr(pp, RSTART + 6, RLENGTH - 6) + 0
+    if (nallow > 0) return (dp in aallow)
+    return !(dp in askip)
+}
+
+# trafficchart-apps writes apps.map, THEN bumps apps.map.ver. The map is only re-read
+# when that version changed (a tiny read instead of parsing the whole map every poll).
+# No version file (older trafficchart-apps) or an unreadable/empty one: read every poll.
+function load_map(   l, i, r, j, v) {
+    v = ""
+    if ((getline v < MAPVER) > 0) {
+        close(MAPVER)
+        if (v != "" && v == map_ver) return
+        map_ver = v
+    } else close(MAPVER)
+    split("", amap); split("", ahost)
+    while ((getline l < MAPFILE) > 0) {
+        i = index(l, "\t")
+        if (i <= 1) continue
+        r = substr(l, i + 1)
+        j = index(r, "\t")
+        if (j) { amap[substr(l, 1, i - 1)] = substr(r, 1, j - 1); ahost[substr(l, 1, i - 1)] = substr(r, j + 1) }
+        else amap[substr(l, 1, i - 1)] = r
+    }
+    close(MAPFILE)
+}
+
+function app_add(a, lan, d1, d2, q1, q2) {
+    gsub(/["\\]/, "_", a)
+    aseen[a] = 1
+    if (lan) { aob[a] += d1; aop[a] += q1; aib[a] += d2; aip[a] += q2 }
+    else     { aib[a] += d1; aip[a] += q1; aob[a] += d2; aop[a] += q2 }
+}
+
+# one accounting step: application + destination + device x application
+# application names are bounded: beyond APP_MAX distinct ones the rest is summed as "(other)"
+function app_name(a) {
+    gsub(/["\\]/, "_", a)
+    if (!(a in aseen)) {
+        if (napp >= APP_MAX) a = "(other)"
+        if (!(a in aseen)) { aseen[a] = 1; napp++ }
+    }
+    return a
+}
+
+function acct(dk, a, host, lan, d1, d2, q1, q2,   hk) {
+    a = app_name(a)
+    if (dk == "router" && lan) { rti[a] += d2; rto[a] += d1; rtip[a] += q2; rtop[a] += q1 }
+    app_add(a, lan, d1, d2, q1, q2)
+    hk = host_add(host, lan, d1, d2, q1, q2)
+    # TOOLTIPS=0: skip the per-flow tooltip-matrix bookkeeping entirely (2 mx_add +
+    # 1 pair_add per accounted delta, each a hash lookup plus a possible mx_gc/pair_gc
+    # sweep once the table is full) - this is the actual CPU cost of the tooltip
+    # feature, not just how often emit() renders it. Totals (app/device/destination)
+    # and the History tab are unaffected: they never read these matrices.
+    if (!TOOLTIPS) return
+    pair_add(dk, a, lan, d1, d2)
+    mx_add("a", a, hk, lan, d1, d2)
+    mx_add("h", hk, dk, lan, d1, d2)
+}
+
+# Learned service names: netifyd labels a flow by application ("ntp",
+# "github", ...); flows it never labels used to land in a "[CLASS]" bucket,
+# so the same service showed up twice ("[NTP]" and "ntp"). plab remembers, per
+# protocol|port, the netifyd label seen for it - but only while that label is
+# unambiguous (same name, case-insensitive). Ports shared by many applications
+# (tcp/443, udp/53 ...) become ambiguous and keep the "[CLASS]" fallback.
+function learn(sv, a) {
+    if (a == "Unknown" || (sv in pamb)) return
+    if (!(sv in plab)) plab[sv] = a
+    else if (tolower(plab[sv]) != tolower(a)) { pamb[sv] = 1; delete plab[sv] }
+}
+
+function fbname(sv, ecls) {
+    return ((sv != "" && (sv in plab)) ? plab[sv] : "[" cname[ecls] "]")
+}
+
+# POSIX-safe single-quoting for a value embedded in an awk-built shell
+# command string. Persistence paths (ptd[]/pmt[], from PERSIST_DIR /
+# PERSIST_MOUNT) are already restricted by _clean() in the shell wrapper to a
+# safe character set before they ever reach this daemon, so quoting them here
+# too is defense in depth: a future change that adds another path source
+# without first going through _clean() cannot turn into a command-injection
+# issue in the system()/sh_t() calls below.
+function shq(s,   q, bs) {
+    q = sprintf("%c", 39)     # a literal single quote breaks the shell single-
+    bs = sprintf("%c", 92)    # quoted block this whole awk program lives in,
+    gsub(q, q bs q q, s)      # so both are built at runtime instead of written
+    return q s q              # literally here.
+}
+
+# rate limited syslog line (logread | grep trafficchart) for the guards below
+function glog_msg(msg) {
+    if (++nglog > 50) return
+    system("logger -t trafficchart " shq("guard: " msg) " 2>/dev/null")
+}
+
+function pend_release(key,   fb) {
+    fb = fbname(ppk[key], pcls[key])
+    acct(pdev[key], fb, prem[key], plan[key], pdb1[key], pdb2[key], pdp1[key], pdp2[key])
+    pend_clear(key)
+}
+
+function pend_clear(key) {
+    delete pdb1[key]; delete pdb2[key]; delete pdp1[key]; delete pdp2[key]
+    delete pdage[key]; delete plan[key]; delete pcls[key]; delete pdev[key]; delete prem[key]; delete ppk[key]
+}
+
+# Account one flow delta to an application. Only called for flows that
+# moved bytes/packets in this poll or are still waiting for their label.
+function app_account(key, dk, lan, ecls, proto, src, dst, pp, d1, d2, q1, q2,   a, hh, t, sp, dp, k1, k2, rem, sv) {
+    a = ""; hh = ""; sv = ""
+    rem = v6short(lan ? dst : src)
+    if ((proto == "tcp" || proto == "udp") && pp != "") {
+        split(pp, t, " ")
+        sp = substr(t[1], 7); dp = substr(t[2], 7)
+        sv = proto "|" dp
+        k1 = proto "|" src "|" dst "|" sp "|" dp
+        if (k1 in amap) { a = amap[k1]; hh = ahost[k1] }
+        else {
+            k2 = proto "|" dst "|" src "|" dp "|" sp
+            if (k2 in amap) { a = amap[k2]; hh = ahost[k2] }
+        }
+    } else giveup[key] = 1
+
+    if (a != "" && sv != "") learn(sv, a)
+    if (a != "") { lab[key] = a; lhost[key] = hh }
+    else if (key in lab) { a = lab[key]; hh = lhost[key] }
+
+    if (a != "") {
+        if (key in pdage) {
+            d1 += pdb1[key]; d2 += pdb2[key]; q1 += pdp1[key]; q2 += pdp2[key]
+            pend_clear(key)
+        }
+        acct(dk, a, (hh != "" ? regdom(hh) : rem), lan, d1, d2, q1, q2)
+    } else if (key in giveup) {
+        acct(dk, fbname(sv, ecls), rem, lan, d1, d2, q1, q2)
+    } else {
+        pdb1[key] += d1; pdb2[key] += d2; pdp1[key] += q1; pdp2[key] += q2
+        plan[key] = lan; pcls[key] = ecls; pdev[key] = dk; prem[key] = rem; ppk[key] = sv
+        pdage[key]++
+        if (pdage[key] >= APP_HOLD) { pend_release(key); giveup[key] = 1 }
+    }
+}
+
+function parse_pass(   line, r, h, proto, mark, pp, t, sp, b1, b2, p1, p2,
+                       src, dst, rsrc, key, m, lan, elig, d1, d2, q1, q2, ecls, k, flows, act, dk, ri, ro, rflow, vflow) {
+    flows = 0
+    split("", rti); split("", rto); split("", rtip); split("", rtop); split("", vdl); split("", vul)
+    while ((r = (getline line < CT_FILE)) > 0) {
+        # Sequential match() extraction instead of split() + per-token tests:
+        # roughly 7x faster in busybox awk, which is what OpenWrt ships.
+        # Line layout: "<fam> <n> <proto> <n> <timeout> [state] src= dst=
+        # sport= dport= packets= bytes= [flags] src= dst= sport= dport=
+        # packets= bytes= [flags] mark=N ..."
+        split(substr(line, 1, 48), h, " ")
+        proto = h[3]
+        src = ""; dst = ""; pp = ""; mark = -1
+        b1 = 0; b2 = 0; p1 = 0; p2 = 0
+
+        if (!match(line, /src=[^ ]+/)) continue
+        src = substr(line, RSTART + 4, RLENGTH - 4)
+        r = substr(line, RSTART + RLENGTH)
+        if (!match(r, /dst=[^ ]+/)) continue
+        dst = substr(r, RSTART + 4, RLENGTH - 4)
+        r = substr(r, RSTART + RLENGTH)
+
+        # rest of the ORIGINAL tuple that identifies the flow
+        if (proto == "tcp" || proto == "udp" || proto == "udplite" || proto == "sctp" || proto == "dccp") {
+            if (match(r, /sport=[0-9]+ dport=[0-9]+/)) { pp = substr(r, RSTART, RLENGTH); r = substr(r, RSTART + RLENGTH) }
+        } else if (proto == "icmp" || proto == "icmpv6") {
+            if (match(r, /type=[0-9]+ code=[0-9]+ id=[0-9]+/)) { pp = substr(r, RSTART, RLENGTH); r = substr(r, RSTART + RLENGTH) }
+        }
+
+        # original-direction counters, then reply-direction counters
+        rsrc = ""
+        if (match(r, /packets=[0-9]+ bytes=[0-9]+/)) {
+            t = substr(r, RSTART + 8, RLENGTH - 8); sp = index(t, " ")
+            p1 = substr(t, 1, sp - 1) + 0; b1 = substr(t, sp + 7) + 0
+            r = substr(r, RSTART + RLENGTH)
+            # WAN-initiated flow (port forward): the LAN device is the source
+            # of the REPLY tuple
+            if (!islocal(src) && match(r, /src=[^ ]+/)) rsrc = substr(r, RSTART + 4, RLENGTH - 4)
+            if (match(r, /packets=[0-9]+ bytes=[0-9]+/)) {
+                t = substr(r, RSTART + 8, RLENGTH - 8); sp = index(t, " ")
+                p2 = substr(t, 1, sp - 1) + 0; b2 = substr(t, sp + 7) + 0
+                r = substr(r, RSTART + RLENGTH)
+            }
+        }
+        if (match(r, /mark=[0-9]+/)) mark = substr(r, RSTART + 5, RLENGTH - 5) + 0
+        if (src == "") continue
+
+        # only the low byte is ours (IPT_MASK 0xff); other bits belong to
+        # other users of the mark (mwan3, ...)
+        m = (mark >= 0) ? mark % 256 : 0
+        if (m == 64 || m > 17) continue      # 0x40 router self-traffic / foreign
+
+        lan = islocal(src)
+        rflow = 0; vflow = 0
+        # Router-originated WAN flow (e.g. stream proxy upstream), whatever its
+        # class mark: the router is the initiator, so orig direction = upload.
+        # Without this a marked router flow (mark 1..17) was taken for a
+        # WAN-initiated port forward: directions swapped, device = remote server.
+        if ((src in rtr) && !islocal(dst)) { rflow = 1; lan = 1 }
+        if (m == 0) {
+            if (rflow) { }                                                # router -> WAN, counted as device "Router"
+            else if (lan && (dst in rtr) && !(src in rtr)) vflow = 1      # LAN device -> router service
+            else if (!lan && rsrc != "" && islocal(rsrc) && !(rsrc in rtr)) { }   # WAN-initiated to a LAN host (port forward, IPv6 inbound)
+            else if (!(lan && !islocal(dst))) continue                    # not LAN->WAN
+        }
+
+        key = proto "|" src "|" dst "|" pp
+        flows++
+
+        if (key in gen) {
+            d1 = b1 - pb1[key]; d2 = b2 - pb2[key]
+            q1 = p1 - pp1[key]; q2 = p2 - pp2[key]
+            if (d1 < 0 || d2 < 0 || q1 < 0 || q2 < 0) {
+                if (b1 + b2 <= BIRTH_MAX) {
+                    # same tuple reused by a new connection: counters restarted
+                    d1 = b1; d2 = b2; q1 = p1; q2 = p2; bulk[key] = 0
+                } else {
+                    # long flow, one counter went backwards: not a new connection.
+                    # Count only what grew, never the whole history.
+                    glog_msg(sprintf("counter went back on a %.0f byte flow: %s (d1=%.0f d2=%.0f q1=%.0f q2=%.0f)", b1 + b2, key, d1, d2, q1, q2))
+                    if (d1 < 0) d1 = 0; if (d2 < 0) d2 = 0; if (q1 < 0) q1 = 0; if (q2 < 0) q2 = 0
+                }
+            }
+        } else if (warm) {
+            # first pass after start: baseline only, count "since start"
+            d1 = 0; d2 = 0; q1 = 0; q2 = 0; bulk[key] = 0
+        } else if (b1 + b2 > BIRTH_MAX) {
+            # first seen after start but already huge: it cannot have been born
+            # within one poll, it was missed earlier (short read, mark flip).
+            # Adopt as baseline instead of booking its whole history.
+            glog_msg(sprintf("adopted flow first seen with %.0f bytes: %s", b1 + b2, key))
+            d1 = 0; d2 = 0; q1 = 0; q2 = 0; bulk[key] = 0
+        } else {
+            # flow born after start: everything it moved is new
+            d1 = b1; d2 = b2; q1 = p1; q2 = p2; bulk[key] = 0
+        }
+
+        if (vflow) {
+            # LAN-local traffic to a router service: not WAN traffic. Volume is
+            # kept per device and used to attribute the WAN traffic of the router.
+            if (d1 > 0 || d2 > 0) {
+                dk = dev_key(1, src, "")
+                dvi[dk] += d2; dvo[dk] += d1
+                # dib_rt/dob_rt mirror dib/dob but credit router-attributable traffic THE MOMENT it is
+                # delivered, not when attr_match() later moves it from the Router bucket to the device
+                # (which can lag up to ATTR_WIN seconds and land in one lump - see rate_one() below).
+                if (attr_port_ok(proto, pp)) { vdl[dk] += d2; vul[dk] += d1; dib_rt[dk] += d2; dob_rt[dk] += d1 }
+            }
+            pb1[key] = b1; pb2[key] = b2; pp1[key] = p1; pp2[key] = p2; gen[key] = n
+            continue
+        }
+        elig = (m == 4 || m == 7 || m == 8)          # WEB / P2P / BE
+        if (!bulk[key] && elig && (b1 + b2) > BULK_BYTES) bulk[key] = 1
+        ecls = bulk[key] ? 6 : m
+
+        act = (d1 > 0 || d2 > 0 || q1 > 0 || q2 > 0)
+        dk = ""
+        if (act) {
+            dk = rflow ? router_key() : dev_key(lan, src, rsrc)
+            dev_add(dk, lan, d1, d2, q1, q2)
+        } else if (key in pdage) dk = pdev[key]
+        if (act || (key in pdage))
+            app_account(key, dk, lan, ecls, proto, src, dst, pp, d1, d2, q1, q2)
+        if (act) {
+            # live flow list: smoothed rate per flow (LAN view: in = download)
+            if (lan) { ri = d2 / dtp; ro = d1 / dtp } else { ri = d1 / dtp; ro = d2 / dtp }
+            if (key in fei) { fei[key] = fei[key] * 0.5 + ri * 0.5; feo[key] = feo[key] * 0.5 + ro * 0.5 }
+            else { fei[key] = ri; feo[key] = ro }
+            fact[key] = n; fdev[key] = dk; fcls[key] = ecls
+        }
+        if (key in fei) ftot[key] = b1 + b2
+
+        pb1[key] = b1; pb2[key] = b2; pp1[key] = p1; pp2[key] = p2; gen[key] = n
+    }
+    close(CT_FILE)
+    if (r < 0) return      # unreadable: keep state, do not sweep
+    router_attribute()
+
+    # forget flows that are gone (their bytes stay in the class totals)
+    for (k in gen) {
+        if (n - gen[k] > GONE_GRACE) {
+            if (k in pdage) pend_release(k)
+            delete gen[k]; delete pb1[k]; delete pb2[k]
+            delete pp1[k]; delete pp2[k]; delete bulk[k]
+            delete lab[k]; delete lhost[k]; delete giveup[k]
+            delete fei[k]; delete feo[k]; delete fact[k]; delete fdev[k]; delete fcls[k]; delete ftot[k]
+        }
+    }
+    # flows that were busy earlier but quiet in this pass: let their rate decay
+    for (k in fact) {
+        if (fact[k] != n) {
+            fei[k] *= 0.5; feo[k] *= 0.5
+            if (fei[k] + feo[k] < 32) { delete fact[k]; delete fei[k]; delete feo[k] }
+        }
+    }
+    # A short read looks like a dip that recovers in the NEXT pass. A burst of
+    # short-lived flows that ends looks like a dip too, but stays low, so it is
+    # not reported.
+    if (sdrop_from > 0) {
+        if (flows >= sdrop_from * 0.8) glog_msg(sprintf("short conntrack pass: %d of %d flows, back to %d in the next pass", sdrop, sdrop_from, flows))
+        sdrop_from = 0
+    }
+    if (nflows > 50 && flows < nflows / 2) { sdrop = flows; sdrop_from = nflows }
+    nflows = flows
+}
+
+# ---- rates: mean over the last RATE_WIN seconds, on the own clock of the daemon ----
+# (cum_now - cum_then) / (t_now - t_then) with "then" = RATE_K samples ago; the
+# ring slot of the current sample still holds exactly that old sample, so it is
+# read before it is overwritten. Until the ring is full the baseline is the start
+# (all totals start at 0).
+function wrate(cn, co, tn_, to_,   dt, r) {
+    dt = tn_ - to_
+    if (dt <= 0) return 0
+    r = (cn - co) / dt
+    return (r > 0) ? r : 0      # a total can shrink (router bytes credited to a device): no negative rate
+}
+
+function rate_one(t, k, cin, cout, slot, full, now, ot,   key, oi, oo) {
+    key = t SUBSEP k
+    if (full) { oi = rh_in[key, slot] + 0; oo = rh_out[key, slot] + 0 } else { oi = 0; oo = 0 }
+    rt_in[key] = wrate(cin, oi, now, ot)
+    rt_out[key] = wrate(cout, oo, now, ot)
+    rh_in[key, slot] = cin; rh_out[key, slot] = cout
+}
+
+function rates_update(now,   slot, full, ot, k) {
+    if (!rt_init) { rt_init = 1; rt_t0 = now; return }
+    rn++
+    slot = rn % RATE_K
+    full = (rn > RATE_K)
+    ot = full ? rt_t[slot] : rt_t0
+    for (k in aseen) rate_one("a", k, aib[k], aob[k], slot, full, now, ot)
+    for (k in dseen) rate_one("d", k, dib_rt[k] + 0, dob_rt[k] + 0, slot, full, now, ot)
+    for (k in hseen) rate_one("h", k, hib[k], hob[k], slot, full, now, ot)
+    rt_t[slot] = now
+    # what conntrack accounting saw in total (applications add up to everything)
+    ct_tot_in = 0; ct_tot_out = 0; ct_rate_in = 0; ct_rate_out = 0
+    ct_pk_in = 0; ct_pk_out = 0
+    for (k in aseen) {
+        ct_tot_in += aib[k]; ct_tot_out += aob[k]
+        ct_pk_in += aip[k]; ct_pk_out += aop[k]
+        ct_rate_in += rt_in["a" SUBSEP k]; ct_rate_out += rt_out["a" SUBSEP k]
+    }
+}
+
+# post-shaping byte counters of the link (helper prints "<rx> <tx> <rx_drop>
+# <rx_ecn> <tx_drop> <tx_ecn>"), timed with uptime() right after they were
+# read; a restarted qdisc (counter goes back) is treated as "no growth" for
+# that sample. The drop/ECN fields are optional (older/custom TC_HELPER
+# builds may only print two fields) - shd_rx/she_rx/shd_tx/she_tx simply stay
+# 0 and the history just carries no "sh" data, get_stats keeps working.
+function tc_update(   l, f, rx, tx, rxd, rxe, txd, txe, rxb, txb, T, tnow, dx, dy, dd, de, slot, full, ot, orx, otx, ok) {
+    ok = 0; l = ""; rxd = -1; rxe = -1; txd = -1; txe = -1; rxb = -1; txb = -1
+    if (TC_HELPER != "") {
+        if ((TC_HELPER | getline l) > 0) {
+            split(l, f, " ")
+            if (f[1] ~ /^[0-9]+$/ && f[2] ~ /^[0-9]+$/) {
+                rx = f[1] + 0; tx = f[2] + 0; ok = 1
+                if (f[3] ~ /^[0-9]+$/) rxd = f[3] + 0
+                if (f[4] ~ /^[0-9]+$/) rxe = f[4] + 0
+                if (f[5] ~ /^[0-9]+$/) txd = f[5] + 0
+                if (f[6] ~ /^[0-9]+$/) txe = f[6] + 0
+                if (f[7] ~ /^[0-9]+$/) rxb = f[7] + 0
+                if (f[8] ~ /^[0-9]+$/) txb = f[8] + 0
+            }
+        }
+        close(TC_HELPER)
+    }
+    have_tc = ok
+    if (!ok) return
+    # momentary queue backlog: every open history bucket keeps the highest value it saw
+    for (T = 1; T <= 3; T++) {
+        if (rxb > pk_rx[T]) pk_rx[T] = rxb
+        if (txb > pk_tx[T]) pk_tx[T] = txb
+    }
+    tnow = uptime()
+    if (tc_have_prev) {
+        dx = rx - tc_prx; dy = tx - tc_ptx
+        if (dx < 0) dx = 0
+        if (dy < 0) dy = 0
+        tcc_rx += dx; tcc_tx += dy
+        # shaper drop/ECN counters: cumulative since qdisc creation, so also
+        # monotonic between polls unless the qdisc was recreated (SQM
+        # restart) - a decrease is treated as "no growth", same as the byte
+        # counters just above.
+        if (rxd >= 0 && sh_have_prev) {
+            dd = rxd - sh_prxd; if (dd < 0) dd = 0; shd_rx += dd
+            de = rxe - sh_prxe; if (de < 0) de = 0; she_rx += de
+        }
+        if (txd >= 0 && sh_have_prev) {
+            dd = txd - sh_ptxd; if (dd < 0) dd = 0; shd_tx += dd
+            de = txe - sh_ptxe; if (de < 0) de = 0; she_tx += de
+        }
+    } else { tc_t0 = tnow; tc_have_prev = 1 }
+    tc_prx = rx; tc_ptx = tx
+    if (rxd >= 0 && txd >= 0) {
+        sh_prxd = rxd; sh_prxe = rxe; sh_ptxd = txd; sh_ptxe = txe; sh_have_prev = 1
+    }
+    tc_rn++
+    slot = tc_rn % RATE_K
+    full = (tc_rn > RATE_K)
+    if (full) { ot = th_t[slot]; orx = th_rx[slot]; otx = th_tx[slot] } else { ot = tc_t0; orx = 0; otx = 0 }
+    tc_rx_rate = wrate(tcc_rx, orx, tnow, ot)
+    tc_tx_rate = wrate(tcc_tx, otx, tnow, ot)
+    th_t[slot] = tnow; th_rx[slot] = tcc_rx; th_tx[slot] = tcc_tx
+}
+
+# bytes per packet that tc counts and conntrack does not (see L2_OVERHEAD above)
+function l2_now() { return l2_auto ? l2_est : L2_OVERHEAD }
+# 0 = fixed by configuration, 1 = auto but still on the default (too few windows), 2 = measured
+function l2_mode() { return l2_auto ? (cal_n >= CAL_MIN ? 2 : 1) : 0 }
+
+# one calibration window of one direction: (tc bytes - conntrack bytes) per conntrack packet
+function cal_eval(dtc, dct, dpk,   e) {
+    if (dpk < CAL_MIN_PKTS || dct / dpk > CAL_MAX_PKT) return
+    e = (dtc - dct) / dpk
+    if (e < 0 || e > 64) return          # counter restart, or clearly not a header
+    cal_ptr = cal_ptr % CAL_KEEP + 1
+    cal_v[cal_ptr] = e
+    if (cal_n < CAL_KEEP) cal_n++
+}
+
+function cal_estimate(   i, j, k, t, srt, best) {
+    if (cal_n < CAL_MIN) return
+    split("", srt)
+    for (i = 1; i <= cal_n; i++) {
+        t = cal_v[i]; j = i - 1
+        while (j >= 1 && srt[j] > t) { srt[j + 1] = srt[j]; j-- }
+        srt[j + 1] = t
+    }
+    k = int((cal_n - 1) * CAL_PCTL / 100) + 1
+    l2_raw = srt[k]
+    best = ""
+    for (i = 1; i <= ncand; i++) if (cand[i] <= l2_raw + CAL_TOL) best = cand[i]
+    l2_est = (best == "") ? cand[1] : best
+}
+
+function cal_update() {
+    if (!l2_auto) return
+    if (!cal_init) {
+        cal_init = 1; cal_polls = 0
+        cs_tc_rx = tcc_rx; cs_tc_tx = tcc_tx; cs_ct_rx = ct_tot_in; cs_ct_tx = ct_tot_out; cs_pk_rx = ct_pk_in; cs_pk_tx = ct_pk_out
+        return
+    }
+    if (++cal_polls < CAL_K) return
+    cal_polls = 0
+    cal_eval(tcc_rx - cs_tc_rx, ct_tot_in - cs_ct_rx, ct_pk_in - cs_pk_rx)
+    cal_eval(tcc_tx - cs_tc_tx, ct_tot_out - cs_ct_tx, ct_pk_out - cs_pk_tx)
+    cs_tc_rx = tcc_rx; cs_tc_tx = tcc_tx; cs_ct_rx = ct_tot_in; cs_ct_tx = ct_tot_out; cs_pk_rx = ct_pk_in; cs_pk_tx = ct_pk_out
+    cal_estimate()
+}
+
+# rate of a cumulative value over UN_WIN (tx) / UN_WIN_RX (rx) seconds, own ring per direction
+function un_rate1(d, cur, now,   slot, full, ot, ov, k) {
+    k = un_k[d]
+    unh_n[d]++
+    slot = unh_n[d] % k
+    full = (unh_n[d] > k)
+    if (full) { ot = unh_t[d, slot]; ov = unh_v[d, slot] } else { ot = un_t0; ov = 0 }
+    unh_t[d, slot] = now; unh_v[d, slot] = cur
+    return wrate(cur, ov, now, ot)
+}
+
+# "not attributed" = what the link carried but conntrack did not count:
+#   d(tc bytes) - d(conntrack bytes) - L2_OVERHEAD * d(conntrack packets)
+# accumulated PER POLL with the header size valid at that moment, so a changing
+# calibration never rewrites history (a running total recomputed with a new header size
+# would jump by millions of packets x 1 byte). It can go negative for a moment (ECM/NSS
+# syncs the conntrack counters in bursts, and conntrack can also count MORE than the
+# shaper sent, e.g. upload packets dropped by the shaper); rates are clamped at 0.
+function un_update(now,   oh, lr, lt, raw_rx, raw_tx) {
+    if (!have_tc || !rt_init) return
+    cal_update()
+    oh = l2_now()
+    if (!un_init) {
+        un_init = 1; un_t0 = now; un_cum_rx = 0; un_cum_tx = 0
+        un_rx_conf = 1; un_tx_conf = 1
+    } else {
+        un_cum_rx += (tcc_rx - up_tc_rx) - (ct_tot_in - up_ct_rx) - oh * (ct_pk_in - up_pk_rx)
+        un_cum_tx += (tcc_tx - up_tc_tx) - (ct_tot_out - up_ct_tx) - oh * (ct_pk_out - up_pk_tx)
+        un_rx_rate = un_rate1("rx", un_cum_rx, now)
+        un_tx_rate = un_rate1("tx", un_cum_tx, now)
+        raw_rx = un_rx_rate; raw_tx = un_tx_rate
+        un_rx_conf = 1; un_tx_conf = 1
+        # A timing offset between the shaper counters and the conntrack counters (NSS syncs the latter in
+        # bursts) makes the difference swing up when a transfer starts and down when it ends: it adds up to
+        # about zero over the whole transfer. A really missing volume does not. So only what is also there
+        # in the long window is reported: the smaller of the two rates.
+        if (UN_WIN_LONG > 0) {
+            lr = un_rate1("rxL", un_cum_rx, now); if (lr < un_rx_rate) un_rx_rate = lr
+            lt = un_rate1("txL", un_cum_tx, now); if (lt < un_tx_rate) un_tx_rate = lt
+            # If the steadier long-window estimate is far below the short-window
+            # one, the short-window figure was mostly counter-sync jitter, not
+            # real missing traffic. Flag that (rather than silently reporting
+            # the clamped number as an ordinary, trustworthy traffic figure) so
+            # the page can show it as "uncertain" instead of implying the same
+            # confidence as every other row.
+            if (raw_rx > 50000 && lr < raw_rx * 0.4) un_rx_conf = 0
+            if (raw_tx > 50000 && lt < raw_tx * 0.4) un_tx_conf = 0
+        }
+    }
+    up_tc_rx = tcc_rx; up_tc_tx = tcc_tx; up_ct_rx = ct_tot_in; up_ct_tx = ct_tot_out; up_pk_rx = ct_pk_in; up_pk_tx = ct_pk_out
+}
+
+# ,"in_bps":..,"out_bps":..  of one application / device / destination
+function jrate(t, k) {
+    return sprintf(",\"in_bps\":%.0f,\"out_bps\":%.0f", rt_in[t SUBSEP k] + 0, rt_out[t SUBSEP k] + 0)
+}
+
+function rate_json(   ui, uo) {
+    ui = un_cum_rx + 0; if (ui < 0) ui = 0
+    uo = un_cum_tx + 0; if (uo < 0) uo = 0
+    return sprintf("\"rate\":{\"win\":%d,\"tc\":%d,\"rx_bps\":%.0f,\"tx_bps\":%.0f,\"ct_rx_bps\":%.0f,\"ct_tx_bps\":%.0f,\"un_rx_bps\":%.0f,\"un_tx_bps\":%.0f,\"un_rx_bytes\":%.0f,\"un_tx_bytes\":%.0f,\"un_rx_conf\":%d,\"un_tx_conf\":%d,\"l2\":%d,\"l2_mode\":%d,\"l2_n\":%d,\"l2_min\":%d,\"l2_raw\":%.1f}", \
+                   RATE_WIN, have_tc + 0, tc_rx_rate + 0, tc_tx_rate + 0, ct_rate_in + 0, ct_rate_out + 0, un_rx_rate + 0, un_tx_rate + 0, ui, uo, un_rx_conf + 0, un_tx_conf + 0, l2_now(), l2_mode(), cal_n + 0, CAL_MIN, l2_raw + 0)
+}
+
+# Aggregator-load diagnostics (audit item #2). Reflects the PREVIOUS poll
+# (this poll is still running while emit() builds this string), which is
+# fine for a trend indicator. "saturated" means the interval has been pinned
+# at its ceiling for several consecutive polls while still over its work
+# budget - i.e. the daemon cannot keep up at the configured settings.
+function load_json() {
+    return sprintf("\"load\":{\"entries\":%d,\"work_ms\":%.0f,\"interval\":%d,\"interval_max\":%d,\"saturated\":%d}", \
+                   nflows, load_work_ms + 0, load_interval + 0, INTERVAL_MAX + 0, (load_sat_polls >= 3) ? 1 : 0)
+}
+
+# ---- history: three resolutions (tiers), optionally persistent ----
+# tier 1 = 5m  (HIST_SEC seconds, closed by uptime)   -> HIST_KEEP buckets
+# tier 2 = 1h  (full local hour, closed by wall clock) -> HIST_HOUR_KEEP buckets
+# tier 3 = 1d  (local midnight, closed by wall clock)  -> HIST_DAY_KEEP buckets
+# Every tier is computed from the FULL totals (not from the 5m buckets), so an
+# application that is small in every 5 minutes but big over a day is still
+# ranked correctly. RAM mirror: OUT/history.json, history_1h.json, history_1d.json
+# (JSON array, one bucket per line). Persistent copy (if PERSIST_DIR is set):
+# history-5m.jsonl / -1h.jsonl / -1d.jsonl, append only, one bucket per line.
+
+# one valid bucket line: starts with {"t":N,"dt":N, ends with }, exactly one bucket
+# (a torn line that was glued to the next one is rejected)
+function hist_valid(l) {
+    if (l !~ /^\{"t":[0-9]+,"dt":[0-9]+/) return 0
+    if (l !~ /\}$/) return 0
+    return (index(substr(l, 2), "{\"t\":") == 0)
+}
+
+function hist_t(l) {
+    if (!match(l, /^\{"t":[0-9]+/)) return 0
+    return substr(l, 6, RLENGTH - 5) + 0
+}
+
+# reload the RAM mirror of tier T (survives a restart of the daemon)
+function hist_load(T,   l, f) {
+    f = hfile[T]
+    while ((getline l < f) > 0) {
+        sub(/,$/, "", l)
+        if (!hist_valid(l)) continue
+        hj[T, ++hn[T]] = l
+        if (hist_t(l) > last_t) last_t = hist_t(l)
+    }
+    close(f)
+    hist_trim(T)
+}
+
+# drop the oldest buckets beyond the keep limit of tier T
+function hist_trim(T,   d, i, k, t) {
+    d = hn[T] - hkeep[T]
+    if (d <= 0) return
+    if (NP > 0) {
+        for (i = 1; i <= d; i++) { t = hist_t(hj[T, i]); for (k = 1; k <= NP; k++) delete psv[k, T, t] }
+        pend_dirty = 1
+    }
+    for (i = 1; i <= hn[T] - d; i++) hj[T, i] = hj[T, i + d]
+    for (i = hn[T] - d + 1; i <= hn[T]; i++) delete hj[T, i]
+    hn[T] -= d
+}
+
+# top-K selection over the candidate arrays cn[1..nc] (name), ci/co (deltas),
+# cx (extra text, may be ""); returns JSON members, remainder goes to "(other)"
+function hist_topk(K, withname, nc,   i, u, best, bi, s, oi, oo, picked, tot) {
+    s = ""; oi = 0; oo = 0
+    for (picked = 0; picked < K; picked++) {
+        best = 0; bi = 0
+        for (i = 1; i <= nc; i++) if (!(i in cused) && cn[i] != "(other)" && ci[i] + co[i] > best) { best = ci[i] + co[i]; bi = i }
+        if (!bi) break
+        cused[bi] = 1
+        s = s sprintf("%s\"%s\":[%.0f,%.0f%s]", (s == "" ? "" : ","), cn[bi], ci[bi], co[bi], (withname ? ",\"" cx[bi] "\"" : ""))
+    }
+    for (i = 1; i <= nc; i++) if (!(i in cused)) { oi += ci[i]; oo += co[i] }
+    if (oi + oo > 0) s = s sprintf("%s\"(other)\":[%.0f,%.0f%s]", (s == "" ? "" : ","), oi, oo, (withname ? ",\"(other)\"" : ""))
+    split("", cused)
+    return s
+}
+
+# wall clock without a fork per poll: epoch = uptime + wall_off. wall_off and the
+# local UTC offset are re-read from "date" every 60 s (15 s while the clock is not
+# plausible yet), so NTP steps and DST changes are picked up. Buckets are only closed
+# while the clock is plausible (after 2023 and not older than the newest bucket).
+function wall_refresh(t,   l, f, z, s) {
+    wall_at = t
+    l = ""
+    "date \"+%s %z\"" | getline l
+    close("date \"+%s %z\"")
+    split(l, f, " ")
+    if (f[1] !~ /^[0-9]+$/) { wall_ok = 0; return }
+    wall_off = f[1] - uptime()
+    z = f[2]; s = (substr(z, 1, 1) == "-") ? -1 : 1
+    tzoff = (z ~ /^[+-][0-9][0-9][0-9][0-9]$/) ? s * (substr(z, 2, 2) * 3600 + substr(z, 4, 2) * 60) : 0
+    wall_ok = (f[1] + 0 >= 1700000000 && f[1] + 0 >= last_t)
+}
+
+function wall_ep(t) { return int(t + wall_off + 0.5) }
+
+# close the open bucket of tier T (covering "elapsed" seconds) and store it.
+# Besides application/device/destination deltas, this also closes out the
+# shaper drop/ECN deltas of the period (see the "Shaper health in the
+# history" header comment) - "sh":{"rx":[dropped,ecn],"tx":[dropped,ecn]}.
+function hist_close(T, elapsed,   di, dov, tin, tout, as, ds, hs, nc, a, k, ep, line, rxdd, rxde, txdd, txde, rxbp, txbp) {
+    if (elapsed < 1) return
+    tin = 0; tout = 0
+    nc = 0
+    split("", cn); split("", ci); split("", co); split("", cx)
+    for (a in aseen) {
+        di = aib[a] - sa_in[T, a]; dov = aob[a] - sa_out[T, a]
+        sa_in[T, a] = aib[a]; sa_out[T, a] = aob[a]
+        if (di + dov > 0) { nc++; cn[nc] = a; ci[nc] = di; co[nc] = dov; tin += di; tout += dov }
+    }
+    as = hist_topk(12, 0, nc)
+    nc = 0
+    split("", cn); split("", ci); split("", co); split("", cx)
+    for (k in dseen) {
+        di = dib[k] - sd_in[T, k]; dov = dob[k] - sd_out[T, k]
+        sd_in[T, k] = dib[k]; sd_out[T, k] = dob[k]
+        if (di + dov > 0) { nc++; cn[nc] = k; ci[nc] = di; co[nc] = dov; cx[nc] = dev_label(k) }
+    }
+    ds = hist_topk(8, 1, nc)
+    nc = 0
+    split("", cn); split("", ci); split("", co); split("", cx)
+    for (k in hseen) {
+        di = hib[k] - sh_in[T, k]; dov = hob[k] - sh_out[T, k]
+        sh_in[T, k] = hib[k]; sh_out[T, k] = hob[k]
+        if (di + dov > 0) { nc++; cn[nc] = k; ci[nc] = di; co[nc] = dov }
+    }
+    hs = hist_topk(12, 0, nc)
+    rxdd = shd_rx - ssh_rx_d[T]; rxde = she_rx - ssh_rx_e[T]
+    txdd = shd_tx - ssh_tx_d[T]; txde = she_tx - ssh_tx_e[T]
+    ssh_rx_d[T] = shd_rx; ssh_rx_e[T] = she_rx; ssh_tx_d[T] = shd_tx; ssh_tx_e[T] = she_tx
+    rxbp = pk_rx[T] + 0; txbp = pk_tx[T] + 0; pk_rx[T] = 0; pk_tx[T] = 0
+    ep = wall_ep(uptime())
+    if (ep > last_t) last_t = ep
+    line = sprintf("{\"t\":%.0f,\"dt\":%.0f,\"in\":%.0f,\"out\":%.0f,\"a\":{%s},\"d\":{%s},\"h\":{%s},\"sh\":{\"rx\":[%.0f,%.0f,%.0f],\"tx\":[%.0f,%.0f,%.0f]}}", \
+                   ep, elapsed, tin, tout, as, ds, hs, rxdd, rxde, rxbp, txdd, txde, txbp)
+    hj[T, ++hn[T]] = line
+    pend_dirty = 1
+    hist_trim(T)
+    hist_write(T)
+}
+
+function hist_write(T,   i, tmp) {
+    tmp = hfile[T] ".tmp"
+    printf "[\n" > tmp
+    for (i = 1; i <= hn[T]; i++) printf "%s%s\n", hj[T, i], (i < hn[T] ? "," : "") > tmp
+    printf "]\n" > tmp
+    close(tmp)
+    system("mv -f " tmp " " hfile[T])
+}
+
+# called every poll: closes the tiers that are due
+function hist_tick(t,   lt, kh, kd) {
+    if (t - wall_at >= (wall_ok ? 60 : 15)) wall_refresh(t)
+    if (!wall_ok) return
+    lt = t + wall_off + tzoff
+    kh = int(lt / HOUR_SEC); kd = int(lt / DAY_SEC)
+    if (t - ht0[1] >= HIST_SEC) { hist_close(1, t - ht0[1]); ht0[1] = t }
+    if (hkey[2] == "") { hkey[2] = kh; hkey[3] = kd }
+    if (kh != hkey[2]) { hist_close(2, t - ht0[2]); ht0[2] = t; hkey[2] = kh }
+    if (kd != hkey[3]) { hist_close(3, t - ht0[3]); ht0[3] = t; hkey[3] = kd }
+}
+
+# ---- history / cumulative-totals reset (reset.req, see the header comment
+# "History reset" above) ----
+# Clears everything the page shows as "totals since start" (applications,
+# devices, destinations, the device x application and tooltip matrices, and
+# the in-RAM history of all three tiers) and resets "since" to now, WITHOUT
+# touching per-flow tracking (gen/pb1/pb2/...), so ongoing flows keep being
+# delta-accounted correctly into the fresh totals instead of being treated as
+# newly born. Persisted (on-disk) history buckets already written to a
+# PERSIST_DIR target are left alone; only the RAM/UI view is cleared - psv/
+# hpfile bookkeeping is untouched, so the next persist_flush_one() simply
+# finds nothing new to append until fresh buckets are closed.
+function hist_reset(   T, i) {
+    split("", aseen); split("", aib); split("", aob); split("", aip); split("", aop); napp = 0
+    split("", dseen); split("", dib); split("", dob); split("", dipk); split("", dopk)
+    split("", dib_rt); split("", dob_rt)
+    split("", dname); split("", dvip); ndev = 0
+    split("", hseen); split("", hib); split("", hob); split("", hip); split("", hop); split("", hlast); nhost = 0
+    split("", pidx); split("", pdv); split("", pap); split("", pin); split("", pout); split("", plast)
+    npair = 0; npair_live = 0; npfree = 0; split("", pfree)
+    split("", mxidx); split("", mxt); split("", mxa); split("", mxb); split("", mxin); split("", mxout); split("", mxlast)
+    mxcnt = 0; split("", mxtn); split("", mxfree); nmxfree = 0
+    for (T = 1; T <= 3; T++) {
+        for (i = 1; i <= hn[T]; i++) delete hj[T, i]
+        hn[T] = 0
+        ht0[T] = uptime()
+        hist_write(T)
+    }
+    hkey[2] = ""; hkey[3] = ""
+    split("", sa_in); split("", sa_out); split("", sd_in); split("", sd_out); split("", sh_in); split("", sh_out)
+    shd_rx = 0; she_rx = 0; shd_tx = 0; she_tx = 0
+    split("", ssh_rx_d); split("", ssh_rx_e); split("", ssh_tx_d); split("", ssh_tx_e)
+    split("", pk_rx); split("", pk_tx)
+    tooltip_last = 0
+    "date +%s" | getline since
+    close("date +%s")
+    pend_dirty = 1
+    glog_msg("history and cumulative totals cleared on request (reset_history)")
+}
+
+# ---- persistence (one or more targets, all of them are mirrors) ----
+# PERSIST_DIR is a space separated list. Every target that is usable gets every bucket
+# (append only). A target that is missing (NAS down, stick not mounted) is retried and,
+# when it comes back, gets what it lacks; what it has and RAM lacks is merged in.
+# All commands that touch a target run under "timeout" (TOUT) and never through awk
+# file I/O, so a hanging network share can stall the daemon for that timeout at most.
+# Per bucket and target only its timestamp is remembered (psv), not a position.
+
+function sh_t(cmd) { return system(tout_cur " sh -c \"" cmd "\" 2>/dev/null") }
+
+function pname(i, T) { return shq(ptd[i]) "/history-" tname[T] ".jsonl" }
+
+# merge the buckets read from target i (pl2, pn2) into the RAM buckets of tier T:
+# union by timestamp, sorted, trimmed to the keep limit
+function persist_merge(i, T,   j, k, t, c) {
+    split("", mt)
+    for (j = 1; j <= hn[T]; j++) mt[hist_t(hj[T, j])] = hj[T, j]
+    for (j = 1; j <= pn2[T]; j++) {
+        t = hist_t(prl[T, j]); psv[i, T, t] = 1
+        if (!(t in mt)) mt[t] = prl[T, j]
+        if (t > last_t) last_t = t
+    }
+    c = 0; split("", ks)
+    for (t in mt) ks[++c] = t + 0
+    for (j = 2; j <= c; j++) { t = ks[j]; k = j - 1; while (k >= 1 && ks[k] > t) { ks[k + 1] = ks[k]; k-- } ks[k + 1] = t }
+    for (j = 1; j <= hn[T]; j++) delete hj[T, j]
+    for (j = 1; j <= c; j++) hj[T, j] = mt[ks[j]]
+    hn[T] = c
+    split("", mt); split("", ks)
+    hist_trim(T)
+    hist_write(T)
+}
+
+function persist_fail(i, t, why, delay) {
+    p_why[i] = why; p_next[i] = t + delay
+    if (why == "mount") p_st[i] = "wait"
+    else if (p_st[i] == "ok") p_st[i] = "err"
+}
+
+# first (or renewed) contact with target i
+function persist_attach1(i, t,   T, f, l, pn, rtmp) {
+    if (pmt[i] != "" && system("grep -q \" " pmt[i] " \" /proc/mounts") != 0) { persist_fail(i, t, "mount", 30); return 0 }
+    if (sh_t("mkdir -p " shq(ptd[i]) " && [ -w " shq(ptd[i]) " ]") != 0) { persist_fail(i, t, "fs", 300); return 0 }
+    rtmp = OUT "/persist.rd"
+    split("", prl); split("", pn2)
+    for (T = 1; T <= 3; T++) {
+        f = pname(i, T)
+        system("rm -f " shq(rtmp))
+        if (sh_t("[ ! -e " f " ] || cat " f " > " shq(rtmp)) != 0) { persist_fail(i, t, "fs", 300); system("rm -f " shq(rtmp)); return 0 }
+        pn = 0
+        while ((getline l < rtmp) > 0) if (hist_valid(l)) prl[T, ++pn] = l
+        close(rtmp)
+        pn2[T] = pn
+    }
+    system("rm -f " shq(rtmp))
+    for (T = 1; T <= 3; T++) { hpfile[i, T] = pn2[T]; persist_merge(i, T) }
+    split("", prl)
+    p_att[i] = 1; p_st[i] = "ok"; p_why[i] = ""; pend_dirty = 1
+    glog_msg("persistent history: target " ptd[i] " is available")
+    return 1
+}
+
+# write everything target i lacks (or rewrite its files when they grew too long)
+function persist_flush_one(i, t,   T, j, k, c, f, comp, rc, ok, tt, tmp) {
+    if (!p_att[i]) return
+    if (pmt[i] != "" && system("grep -q \" " pmt[i] " \" /proc/mounts") != 0) {
+        p_att[i] = 0; persist_fail(i, t, "mount", 30); pend_dirty = 1; return
+    }
+    ok = 1
+    tmp = OUT "/persist.tmp"
+    for (T = 1; T <= 3; T++) {
+        c = 0; split("", ts)
+        printf "" > tmp
+        for (j = 1; j <= hn[T]; j++) {
+            tt = hist_t(hj[T, j])
+            if (!((i, T, tt) in psv)) { print hj[T, j] > tmp; ts[++c] = tt }
+        }
+        close(tmp)
+        comp = (hpfile[i, T] + c > 2 * hkeep[T] + 16)
+        if (c == 0 && !comp) continue
+        f = pname(i, T)
+        if (comp) {
+            printf "" > tmp
+            for (j = 1; j <= hn[T]; j++) print hj[T, j] > tmp
+            close(tmp)
+            rc = sh_t("cp " shq(tmp) " " f ".tmp && mv -f " f ".tmp " f " || { rm -f " f ".tmp; false; }")
+        } else rc = sh_t("cat " shq(tmp) " >> " f)
+        if (rc != 0) { ok = 0; break }
+        if (comp) { for (j = 1; j <= hn[T]; j++) psv[i, T, hist_t(hj[T, j])] = 1; hpfile[i, T] = hn[T] }
+        else { for (k = 1; k <= c; k++) psv[i, T, ts[k]] = 1; hpfile[i, T] += c }
+    }
+    system("rm -f " shq(tmp))
+    pend_dirty = 1
+    if (ok) { p_st[i] = "ok"; p_saved[i] = wall_ok ? wall_ep(t) : 0 }
+    else {
+        glog_msg("cannot write history to " ptd[i] " - retrying, the other targets are not affected")
+        p_att[i] = 0; p_st[i] = "err"; p_why[i] = "fs"; p_next[i] = t + 60
+    }
+}
+
+function persist_flush(t,   i) {
+    for (i = 1; i <= NP; i++) persist_flush_one(i, t)
+}
+
+function persist_tick(t,   i) {
+    if (NP == 0) return
+    for (i = 1; i <= NP; i++)
+        if (!p_att[i] && t >= p_next[i]) { if (persist_attach1(i, t)) persist_flush_one(i, t) }
+    if (t - p_last >= PERSIST_SEC) { p_last = t; persist_flush(t) }
+}
+
+# unsaved buckets per target (recomputed only when something changed)
+function persist_count(   i, T, j, c) {
+    if (!pend_dirty) return
+    pend_dirty = 0
+    for (i = 1; i <= NP; i++) {
+        c = 0
+        for (T = 1; T <= 3; T++) for (j = 1; j <= hn[T]; j++) if (!((i, T, hist_t(hj[T, j])) in psv)) c++
+        ppend[i] = c
+    }
+}
+
+# overall: off | ok (all targets ok) | partial (some) | err | wait (none usable)
+function persist_json(   i, nok, nerr, s, ov) {
+    persist_count()
+    nok = 0; nerr = 0; s = ""
+    for (i = 1; i <= NP; i++) {
+        if (p_att[i]) nok++
+        else if (p_st[i] == "err") nerr++
+        s = s sprintf("%s{\"dir\":\"%s\",\"state\":\"%s\",\"saved\":%.0f,\"pending\":%d}", (i > 1 ? "," : ""), ptd[i], p_st[i], p_saved[i] + 0, ppend[i] + 0)
+    }
+    ov = (NP == 0) ? "off" : (nok == NP ? "ok" : (nok > 0 ? "partial" : (nerr > 0 ? "err" : "wait")))
+    return sprintf("\"persist\":{\"state\":\"%s\",\"sec\":%d,\"targets\":[%s]}", ov, PERSIST_SEC, s)
+}
+
+# stop request (init script stopped the service): close the open buckets as partial
+# ones so nothing since the last full bucket is lost, and write everything out.
+# Short timeouts here: the service has to be gone within a few seconds.
+function hist_final(t,   T, i) {
+    wall_refresh(t)
+    if (wall_ok) for (T = 1; T <= 3; T++) if (t - ht0[T] >= 30) hist_close(T, t - ht0[T])
+    tout_cur = TOUT4
+    for (i = 1; i <= NP; i++) if (!p_att[i] && p_why[i] != "fs") persist_attach1(i, t)
+    persist_flush(t)
+}
+
+# JSON object body {"in_bytes":..,"in_packets":..,"out_bytes":..,"out_packets":..}
+function jcnt(ib, ip_, ob, op_) {
+    return sprintf("\"in_bytes\":%.0f,\"in_packets\":%.0f,\"out_bytes\":%.0f,\"out_packets\":%.0f", ib + 0, ip_ + 0, ob + 0, op_ + 0)
+}
+
+function emit(t,   s, tmp, a, first, k, nm, i, j, sc, nt, tsc, tky, pd, tot, n2, kp, dp, rem, ap, hh, tooltip_due, tooltip_period) {
+    s = "{\"since\":" since ",\"up\":" sprintf("%.2f", t) ",\"flows\":" nflows "," rate_json() "," load_json() "," persist_json() ",\"apps\":{"
+    # tooltip data: top 10 destinations per application, top 10 devices per
+    # destination - only for the 30 biggest of each (that is all the page shows)
+    tooltip_period = (mxcnt > 6000 || npair > 3000) ? 10 : ((mxcnt > 2000 || npair > 1000) ? 5 : 1)
+    tooltip_due = (tooltip_last == 0 || (TOOLTIP_EVERY > 0 && n - tooltip_last >= TOOLTIP_EVERY) || (TOOLTIP_EVERY <= 0 && n - tooltip_last >= tooltip_period))
+    if (TOOLTIPS && tooltip_due) {
+        split("", ktsc); split("", ktky); ktn = 0; split("", keepa)
+        for (a in aseen) kt_ins(a, aib[a] + aob[a], 30)
+        for (i = 1; i <= ktn; i++) keepa[ktky[i]] = 1
+        split("", ktsc); split("", ktky); ktn = 0; split("", keeph)
+        for (k in hseen) kt_ins(k, hib[k] + hob[k], 30)
+        for (i = 1; i <= ktn; i++) keeph[ktky[i]] = 1
+        mx_top(10)
+        split("", tdn); split("", tdv); split("", tda); split("", tdi); split("", tdo)
+        for (i = 1; i <= npair; i++) {
+            if (!(i in pdv)) continue
+            pd = pdv[i]; tot = pin[i] + pout[i]
+            if (tot <= 0) continue
+            n2 = tdn[pd] + 0
+            if (n2 < 10 || tot > tdv[pd, n2]) {
+                if (n2 < 10) { n2++; tdn[pd] = n2 }
+                j = n2
+                while (j > 1 && tdv[pd, j - 1] < tot) {
+                    tdv[pd, j] = tdv[pd, j - 1]; tda[pd, j] = tda[pd, j - 1]
+                    tdi[pd, j] = tdi[pd, j - 1]; tdo[pd, j] = tdo[pd, j - 1]; j--
+                }
+                tdv[pd, j] = tot; tda[pd, j] = pap[i]; tdi[pd, j] = pin[i]; tdo[pd, j] = pout[i]
+            }
+        }
+        tooltip_last = n
+    }
+
+    first = 1
+    for (a in aseen) {
+        s = s sprintf("%s\"%s\":{%s%s%s}", (first ? "" : ","), a, jcnt(aib[a], aip[a], aob[a], aop[a]), jrate("a", a), ((a in keepa) ? top_json("a", a, 0) : ""))
+        first = 0
+    }
+
+    s = s "},\"devices\":{"
+    first = 1
+    for (k in dseen) {
+        s = s sprintf("%s\"%s\":{\"name\":\"%s\",\"ip\":\"%s\",%s%s,\"via_in\":%.0f,\"via_out\":%.0f,\"top\":[", (first ? "" : ","), k, dev_label(k), ((k in dvip) ? dvip[k] : ""), \
+                      jcnt(dib[k], dipk[k], dob[k], dopk[k]), jrate("d", k), dvi[k] + 0, dvo[k] + 0)
+        for (j = 1; j <= tdn[k]; j++)
+            s = s sprintf("%s[\"%s\",%.0f,%.0f]", (j > 1 ? "," : ""), tda[k, j], tdi[k, j], tdo[k, j])
+        s = s "]}"
+        first = 0
+    }
+
+    s = s "},\"hosts\":{"
+    first = 1
+    for (k in hseen) {
+        s = s sprintf("%s\"%s\":{%s%s%s}", (first ? "" : ","), k, jcnt(hib[k], hip[k], hob[k], hop[k]), jrate("h", k), ((k in keeph) ? top_json("h", k, 1) : ""))
+        first = 0
+    }
+
+    # 25 busiest flows by smoothed rate
+    nt = 0
+    for (k in fact) {
+        sc = fei[k] + feo[k]
+        if (nt < 25 || sc > tsc[nt]) {
+            if (nt < 25) nt++
+            i = nt
+            while (i > 1 && tsc[i - 1] < sc) { tsc[i] = tsc[i - 1]; tky[i] = tky[i - 1]; i-- }
+            tsc[i] = sc; tky[i] = k
+        }
+    }
+    s = s "},\"top_flows\":["
+    for (i = 1; i <= nt; i++) {
+        k = tky[i]
+        split(k, kp, "|")
+        dp = ""
+        if (match(kp[4], /dport=[0-9]+/)) dp = substr(kp[4], RSTART + 6, RLENGTH - 6)
+        rem = v6short(islocal(kp[2]) ? kp[3] : kp[2])
+        ap = (k in lab) ? lab[k] : fbname(kp[1] "|" dp, fcls[k])
+        gsub(/["\\]/, "_", ap)
+        hh = ((k in lhost) && lhost[k] != "") ? lhost[k] : ""
+        gsub(/[^A-Za-z0-9._:-]/, "_", hh)
+        s = s sprintf("%s{\"dev\":\"%s\",\"ip\":\"%s\",\"app\":\"%s\",\"host\":\"%s\",\"dst\":\"%s\",\"port\":\"%s\",\"proto\":\"%s\",\"class\":\"%s\",\"in_bps\":%.0f,\"out_bps\":%.0f,\"bytes\":%.0f}", \
+                      (i > 1 ? "," : ""), dev_label(fdev[k]), ((fdev[k] in dvip) ? dvip[fdev[k]] : ""), ap, hh, rem, dp, kp[1], cname[fcls[k]], fei[k], feo[k], ftot[k])
+    }
+    s = s "]}"
+    tmp = OUT "/classes.json.tmp"
+    print s > tmp
+    close(tmp)
+    system("mv -f " tmp " " OUT "/classes.json")
+}
+
+BEGIN {
+    # Class names: this "cn0" list (index 0 = UNMARKED, index N = mark 0xN)
+    # is duplicated in the QOS_DSCP table of nss-rk.qos (same 17 classes,
+    # same mark order) because nss-rk.qos deliberately does not source this
+    # file or trafficchart-common (it stays a standalone SQM shaper script
+    # that must keep working even without the traffic-chart app installed).
+    # If you add, remove or renumber a class here, make the matching change
+    # in the QOS_DSCP table of nss-rk.qos too - the two are content-verified
+    # identical as of 2026-09-27, not just "should be".
+    split("UNMARKED PRIO VOIP GAME WEB STREAM BULK P2P BE VPN MAIL NTP FTP REMOTE DB MGMT CONTAINER IOT", cn0, " ")
+    for (c = 0; c <= 17; c++) cname[c] = cn0[c + 1]
+    "date +%s" | getline since
+    close("date +%s")
+    n = 0; warm = 1; nflows = 0
+    INTERVAL += 0; if (INTERVAL < 1) INTERVAL = 1
+    ADAPT_INTERVAL += 0; INTERVAL_MAX += 0; ADAPT_BUDGET += 0
+    TOOLTIP_EVERY += 0; HOSTS_REFRESH_SEC += 0; GUA_REFRESH_SEC += 0
+    if (INTERVAL_MAX < INTERVAL) INTERVAL_MAX = INTERVAL
+    if (ADAPT_BUDGET <= 0 || ADAPT_BUDGET >= 1) ADAPT_BUDGET = 0.30
+    poll_interval = INTERVAL
+    last_hosts_refresh = -1e9; last_gua_refresh = -1e9; tooltip_last = 0
+    BIRTH_MAX += 0; GONE_GRACE += 0
+    RATE_WIN += 0; UN_WIN += 0
+    if (RATE_WIN < 2 * INTERVAL) RATE_WIN = 2 * INTERVAL
+    if (UN_WIN < RATE_WIN) UN_WIN = RATE_WIN
+    RATE_K = int(RATE_WIN / INTERVAL + 0.5); if (RATE_K < 2) RATE_K = 2
+    UN_K = int(UN_WIN / INTERVAL + 0.5); if (UN_K < 2) UN_K = 2
+    UN_WIN_RX += 0; if (UN_WIN_RX < UN_WIN) UN_WIN_RX = UN_WIN
+    UN_K_RX = int(UN_WIN_RX / INTERVAL + 0.5); if (UN_K_RX < 2) UN_K_RX = 2
+    un_k["rx"] = UN_K_RX; un_k["tx"] = UN_K
+    UN_WIN_LONG += 0; if (UN_WIN_LONG > 0 && UN_WIN_LONG < UN_WIN_RX) UN_WIN_LONG = UN_WIN_RX
+    UN_K_LONG = int(UN_WIN_LONG / INTERVAL + 0.5); if (UN_K_LONG < 2) UN_K_LONG = 2
+    un_k["rxL"] = UN_K_LONG; un_k["txL"] = UN_K_LONG
+    # link header size: measured (auto) or fixed
+    if (L2_OVERHEAD == "auto" || L2_OVERHEAD == "") { l2_auto = 1; l2_est = L2_INIT + 0 } else { l2_auto = 0; L2_OVERHEAD += 0 }
+    ncand = split(L2_CANDIDATES, cand, " ")
+    for (cix = 1; cix <= ncand; cix++) cand[cix] += 0
+    for (cix = 2; cix <= ncand; cix++) { ct_ = cand[cix]; cj = cix - 1; while (cj >= 1 && cand[cj] > ct_) { cand[cj + 1] = cand[cj]; cj-- } cand[cj + 1] = ct_ }
+    if (ncand < 1) { ncand = 1; cand[1] = L2_INIT + 0 }
+    CAL_TOL += 0
+    CAL_WIN += 0; CAL_KEEP += 0; CAL_MIN += 0; CAL_PCTL += 0; CAL_MAX_PKT += 0; CAL_MIN_PKTS += 0
+    if (CAL_KEEP < 4) CAL_KEEP = 4
+    if (CAL_MIN > CAL_KEEP) CAL_MIN = CAL_KEEP
+    CAL_K = int(CAL_WIN / INTERVAL + 0.5); if (CAL_K < 2) CAL_K = 2
+    APP_MAX += 0; MX_MAX += 0; PAIR_MAX += 0
+    IDLE_LONG_P = int(TBL_IDLE_LONG / INTERVAL) + 5
+    IDLE_SHORT_P = int(TBL_IDLE_SHORT / INTERVAL) + 5
+    IDLE_MIN_P = int(TBL_IDLE_SHORT / 5 / INTERVAL) + 2   # last resort: idle for about 2 minutes
+    HOST_MAX += 0; if (HOST_MAX < 20) HOST_MAX = 20
+    TBL_LOG_POLLS = int(3600 / INTERVAL) + 1
+    TOOLTIPS += 0
+    ATTR_MIN += 0; ATTR_SHARE += 0; ATTR_TOL += 0; ATTR_TOPAPPS += 0; ATTR_TOTALS += 0
+    ATTR_MAX_APPS += 0; ATTR_MAX_DEVICES += 0
+    nskip = split(ATTR_SKIP_PORTS, skipl, " ")
+    for (sk = 1; sk <= nskip; sk++) askip[skipl[sk] + 0] = 1
+    nallow = split(ATTR_PORTS, allowl, " ")
+    for (sk = 1; sk <= nallow; sk++) aallow[allowl[sk] + 0] = 1
+    ATTR_POLLS = int(ATTR_WIN / INTERVAL) + 1
+    if (ATTR_POLLS < 2) ATTR_POLLS = 2
+    dtp = INTERVAL + 0
+    UNRESOLVED_FILE = OUT "/unresolved_v6"
+    V6_STALE_POLLS = int(60 / INTERVAL + 0.5); if (V6_STALE_POLLS < 2) V6_STALE_POLLS = 2   # ~60s: how long an unresolved v6 address is still offered for re-resolution
+    tname[1] = "5m"; tname[2] = "1h"; tname[3] = "1d"
+    hkeep[1] = HIST_KEEP + 0; hkeep[2] = HIST_HOUR_KEEP + 0; hkeep[3] = HIST_DAY_KEEP + 0
+    hfile[1] = OUT "/history.json"; hfile[2] = OUT "/history_1h.json"; hfile[3] = OUT "/history_1d.json"
+    HOUR_SEC += 0; DAY_SEC += 0; PERSIST_SEC += 0
+    last_t = 0; wall_off = 0; tzoff = 0; wall_ok = 0; wall_at = -1000
+    shd_rx = 0; she_rx = 0; shd_tx = 0; she_tx = 0; sh_have_prev = 0
+    # persistence targets; a target under one of the PERSIST_MOUNT paths is only used while that path is mounted
+    NP = split(PERSIST_DIR, ptd, " ")
+    nmt = split(PERSIST_MOUNT, mts, " ")
+    for (i = 1; i <= NP; i++) {
+        pmt[i] = ""; p_att[i] = 0; p_st[i] = "wait"; p_next[i] = 0; p_saved[i] = 0; p_why[i] = ""
+        for (k = 1; k <= nmt; k++)
+            if ((ptd[i] == mts[k] || index(ptd[i], mts[k] "/") == 1) && length(mts[k]) > length(pmt[i])) pmt[i] = mts[k]
+    }
+    tout_cur = TOUT
+    pend_dirty = 1
+    for (T = 1; T <= 3; T++) { hn[T] = 0; hist_load(T); ht0[T] = uptime() }
+    p_last = ht0[1]
+    wall_refresh(ht0[1])
+    for (i = 1; i <= NP; i++) if (persist_attach1(i, ht0[1])) persist_flush_one(i, ht0[1])
+    t0prev = -1
+    while (1) {
+        n++
+        t0 = uptime()
+        if (t0prev >= 0 && t0 > t0prev) dtp = t0 - t0prev
+        t0prev = t0
+        if (t0 - last_gua_refresh >= GUA_REFRESH_SEC) { refresh_gua(); last_gua_refresh = t0 }
+        if (t0 - last_hosts_refresh >= HOSTS_REFRESH_SEC) { write_unresolved(); refresh_hosts(); reconcile_v6_devices(); last_hosts_refresh = t0 }
+        load_map()
+        parse_pass()
+        tn = (t0 + uptime()) / 2
+        tc_update()
+        rates_update(tn)
+        un_update(tn)
+        emit(tn)
+        hist_tick(tn)
+        persist_tick(tn)
+        warm = 0
+        work_elapsed = uptime() - t0
+        if (ADAPT_INTERVAL) {
+            if (work_elapsed > poll_interval * ADAPT_BUDGET && poll_interval < INTERVAL_MAX)
+                poll_interval += 1
+            else if (work_elapsed < poll_interval * ADAPT_BUDGET * 0.5 && poll_interval > INTERVAL)
+                poll_interval -= 1
+        } else poll_interval = INTERVAL
+        # Diagnostics for audit item #2: the adaptive interval protects
+        # responsiveness but does not solve the underlying scaling limit of a
+        # full conntrack-table walk every poll. Rather than silently letting
+        # the daemon become a continuously-running parser under heavy load,
+        # track how often it is pinned at the interval ceiling while still
+        # over budget, log it once it has been sustained, and expose it (plus
+        # entries-parsed-per-poll) in the JSON so the page/operator can see it.
+        load_work_ms = work_elapsed * 1000
+        load_interval = poll_interval
+        if (ADAPT_INTERVAL && poll_interval >= INTERVAL_MAX && work_elapsed > poll_interval * ADAPT_BUDGET)
+            load_sat_polls++
+        else
+            load_sat_polls = 0
+        if (load_sat_polls == 5)
+            glog_msg(sprintf("aggregation is falling behind: %d consecutive polls at the interval ceiling (%ds) with %.0fms of work per poll (entries=%d) - consider a lower profile, a smaller table (see the CPU/Performance settings), or raising the max interval", load_sat_polls, poll_interval, load_work_ms, nflows))
+        sleep_for = int(poll_interval - work_elapsed + 0.999)
+        if (sleep_for < 1) sleep_for = 1
+        system("sleep " sleep_for)
+        # stop request from the init script: final flush, then leave
+        if ((getline sl < STOPFILE) >= 0) { close(STOPFILE); hist_final(uptime()); exit 0 }
+        close(STOPFILE)
+        # reset request (luci.trafficchart "reset_history"): clear totals/history
+        # and keep running - see hist_reset() and the header comment above
+        if ((getline rl < RESETFILE) >= 0) {
+            close(RESETFILE)
+            system("rm -f " RESETFILE)
+            hist_reset()
+        } else close(RESETFILE)
+        # a newer instance took over (this one is an orphan): leave without touching the history
+        if ((getline pl2 < PIDFILE) > 0 && pl2 != WPID) exit 0
+        close(PIDFILE)
+    }
+}
+' &
+APID=$!
+
+# SIGTERM/INT/HUP from procd: ask the daemon to flush (stop.req), give it up to 14 s
+# (the init script sets term_timeout 20), then make sure it is gone
+stop_agg() {
+    trap '' TERM INT HUP
+    : > "$STOPFILE"
+    _i=0
+    while [ "$_i" -lt 14 ] && kill -0 "$APID" 2>/dev/null; do sleep 1; _i=$((_i + 1)); done
+    kill "$APID" 2>/dev/null
+    rm -f "$PIDFILE" "$STOPFILE"
+    exit 0
+}
+trap stop_agg TERM INT HUP
+wait "$APID"
+_rc=$?
+rm -f "$PIDFILE"
+exit $_rc

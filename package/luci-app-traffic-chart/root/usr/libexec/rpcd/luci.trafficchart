@@ -1,0 +1,361 @@
+#!/bin/sh
+# Queue/device detection (which SQM queues are enabled, which devices carry
+# the shapers, how to read their counters) is shared with trafficchart-tc.
+. "${TC_COMMON:-/usr/libexec/trafficchart-common}"
+
+# --- Traffic-class data comes from the trafficchart-agg daemon ---
+#
+# /usr/libexec/trafficchart-agg (procd service "trafficchart") walks
+# /proc/net/nf_conntrack once every few seconds, keeps per-flow state and
+# writes monotonically growing per-class totals to AGG_FILE. This script only
+# serves that file plus the real interface counters (tc qdisc hw stats) and
+# the configured SQM bandwidth - it no longer parses conntrack itself, so the
+# cost is independent of how many browser tabs are open.
+#
+# Why a daemon: summing all *currently live* flows per class (what this
+# script did before) is not monotonic - a closing flow removes its bytes, and
+# a flow crossing BULK_BYTES moved its whole history from WEB to BULK in one
+# poll. Per-flow deltas fix both. See the header of trafficchart-agg.
+AGG_FILE="/tmp/trafficchart/classes.json"
+# AGG_MAX_AGE (seconds; older = daemon dead/hung) is read from the config in "call"
+HIST_DIR="${TC_OUT_DIR:-/tmp/trafficchart}"
+# history.json = 5 min buckets, history_1h.json = hourly, history_1d.json = daily
+# (RAM mirrors written by the daemon, which also reloads them from the persistent
+# storage after a reboot - this script never touches the persistent path itself)
+HIST_MAX=600   # never return more buckets than this (ubus messages are limited to 1 MB)
+
+
+case "$1" in
+    list)
+        # "history" is an optional parameter of get_stats (rather than a second
+        # method) so no rpcd ACL change is needed for it. "tier" (5m | 1h | 1d)
+        # selects the resolution, "n" limits the answer to the newest n buckets.
+        echo '{"get_stats": {"history": 1, "tier": "5m", "n": 1}, "restart": {}, "reset_history": {}}'
+        ;;
+    call)
+        # rpcd exec protocol passes the method name as $2; "restart" and
+        # "reset_history" both need the write ACL (luci-app-traffic-chart.json),
+        # get_stats only needs read.
+        if [ "$2" = "restart" ]; then
+            # detached: the init script stopping this very rpcd child must not
+            # block the ubus reply
+            ( /etc/init.d/trafficchart restart >/dev/null 2>&1 & )
+            echo '{"result": "restarting"}'
+            exit 0
+        fi
+
+        if [ "$2" = "reset_history" ]; then
+            # Distinct from "restart": this only asks the RUNNING daemon to
+            # clear its cumulative application/device/destination totals and
+            # its in-RAM history (all three tiers), then keep going - no procd
+            # bounce, no re-attaching of persistence targets, live flow
+            # tracking (and therefore the "top flows" list) is unaffected.
+            # trafficchart-agg polls for this file once per loop iteration
+            # (same mechanism as its stop.req) and removes it once handled.
+            # Buckets already written to a persistent storage path are left
+            # alone (only the RAM/UI view is cleared) - delete those files
+            # yourself if you also want the on-disk archive gone.
+            mkdir -p "$HIST_DIR" 2>/dev/null
+            : > "${HIST_DIR}/reset.req"
+            echo '{"result": "reset requested"}'
+            exit 0
+        fi
+
+        # optional parameters arrive as JSON on stdin (rpcd exec plugin)
+        PARAMS=""
+        [ -t 0 ] || PARAMS=$(cat 2>/dev/null)
+        case "$PARAMS" in
+            *'"history"'*)
+                # get_stats {"history":1,"tier":"1h","n":200} -> newest n buckets of that tier
+                TIER=$(echo "$PARAMS" | sed -n 's/.*"tier" *: *"\([a-z0-9]*\)".*/\1/p')
+                HN=$(echo "$PARAMS" | sed -n 's/.*"n" *: *\([0-9][0-9]*\).*/\1/p')
+                case "$TIER" in
+                    1h) HIST_FILE="$HIST_DIR/history_1h.json" ;;
+                    1d) HIST_FILE="$HIST_DIR/history_1d.json" ;;
+                    *)  HIST_FILE="$HIST_DIR/history.json"; TIER=5m ;;
+                esac
+                case "$HN" in ''|*[!0-9]*|0) HN=$HIST_MAX ;; esac
+                [ "$HN" -gt "$HIST_MAX" ] && HN=$HIST_MAX
+                if [ -r "$HIST_FILE" ]; then
+                    # file = JSON array, one bucket per line; keep the newest HN
+                    awk -v N="$HN" -v TIER="$TIER" '
+                        /^\{/ { sub(/,$/, ""); b[++c] = $0 }
+                        END {
+                            s = c - N + 1; if (s < 1) s = 1
+                            printf "{\"tier\":\"%s\",\"buckets\":[", TIER
+                            for (i = s; i <= c; i++) printf "%s%s", (i > s ? "," : ""), b[i]
+                            print "]}"
+                        }' "$HIST_FILE"
+                else
+                    echo '{"buckets":[]}'
+                fi
+                exit 0
+                ;;
+        esac
+
+        # --- Short-TTL cache to avoid redundant conntrack parses ---
+        #
+        # The conntrack parse now lives in the trafficchart-agg daemon, so
+        # extra tabs no longer multiply that cost. What is still per call is
+        # the nft table check plus two "tc -s qdisc show" forks; a 1s cache
+        # collapses near-simultaneous multi-tab requests into one real run.
+        CACHE_FILE="/tmp/luci_trafficchart_cache.json"
+        CACHE_LOCK="/tmp/luci_trafficchart_cache.lock"
+        # settings from /etc/config/trafficchart (options agg_max_age, cache_ttl_sec)
+        tc_cfg AGG_MAX_AGE 10 int
+        tc_cfg CACHE_TTL_SEC 1 int
+
+        cache_is_fresh() {
+            [ -f "$CACHE_FILE" ] || return 1
+            local cache_epoch age
+            cache_epoch=$(date -r "$CACHE_FILE" +%s 2>/dev/null) || return 1
+            age=$(( $(date +%s) - cache_epoch ))
+            [ "$age" -ge 0 ] && [ "$age" -lt "$CACHE_TTL_SEC" ]
+        }
+
+        if cache_is_fresh; then
+            cat "$CACHE_FILE"
+            exit 0
+        fi
+
+        # Serialize the actual (re)generation with flock where available,
+        # so a burst of near-simultaneous requests collapses into one real
+        # computation instead of each racing to redo the same work - the
+        # loser(s) just block briefly, then re-check and read the winner's
+        # fresh cache. Falls back to unsynchronized (but still cached)
+        # behaviour if this busybox build lacks flock.
+        HAVE_FLOCK=0
+        LOCKED=0
+        if command -v flock >/dev/null 2>&1; then
+            HAVE_FLOCK=1
+            exec 9>"$CACHE_LOCK"
+            if flock -w 2 9 2>/dev/null; then
+                LOCKED=1
+            fi
+            if cache_is_fresh; then
+                cat "$CACHE_FILE"
+                [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+                exit 0
+            fi
+            if [ "$LOCKED" != "1" ]; then
+                # The 2s wait timed out: someone else is already regenerating.
+                # Proceeding here unlocked would race them and redo the same
+                # work twice for nothing - wait longer (bounded) for them to
+                # finish instead, then just serve what they produced. Only
+                # fall through to regenerating ourselves if that also times
+                # out (e.g. the holder died mid-update).
+                if flock -w 5 9 2>/dev/null; then
+                    LOCKED=1
+                    if cache_is_fresh; then
+                        cat "$CACHE_FILE"
+                        flock -u 9 2>/dev/null
+                        exit 0
+                    fi
+                fi
+            fi
+        fi
+
+        BACKEND=$(tc_detect_backend)
+
+        # Quick existence check only - we no longer parse nft's own counters.
+        # "marking" = the port based nftables classifier (nss-rk.qos) is loaded.
+        # NSS needs it (its absence means the shaper is not up); with a stock
+        # shaper the chart works without it, flows are then just unclassified.
+        if nft list table inet qos_custom >/dev/null 2>&1; then MARKING=true; else MARKING=false; fi
+        if [ "$BACKEND" = "nss" ] && [ "$MARKING" = "false" ]; then
+            echo '{"error": "table not found"}'
+            [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+            exit 0
+        fi
+
+        if [ ! -r "$AGG_FILE" ]; then
+            echo '{"error": "aggregator not running - /etc/init.d/trafficchart start"}'
+            [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+            exit 0
+        fi
+        agg_epoch=$(date -r "$AGG_FILE" +%s 2>/dev/null)
+        if [ -z "$agg_epoch" ] || [ $(( $(date +%s) - agg_epoch )) -gt "$AGG_MAX_AGE" ]; then
+            echo '{"error": "aggregator data stale - /etc/init.d/trafficchart restart"}'
+            [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+            exit 0
+        fi
+        # one-line JSON object ending in "}" - strip that brace so iface/sqm
+        # can be appended as sibling keys below
+        AGG_JSON=$(cat "$AGG_FILE" 2>/dev/null)
+        AGG_JSON="${AGG_JSON%\}}"
+        if [ -z "$AGG_JSON" ]; then
+            echo '{"error": "aggregator file empty"}'
+            [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+            exit 0
+        fi
+
+        # enabled SQM queues, devices, configured rates (sums over all queues)
+        tc_resolve
+
+        # Real, POST-SHAPING byte counters come from tc_read_counters (see
+        # trafficchart-common for why tc qdisc and not sysfs under NSS offload).
+
+        # Shaper health from the same plain-text "tc -s qdisc show" output:
+        # root nsstbl (bytes/packets/overlimits) + leaf nssfq_codel (drops,
+        # backlog, ECN marks, queue-limit hits, active flows). Prints a JSON
+        # object, or {} if the device has no such qdisc.
+        get_shaper_json() {
+            local dev="$1"
+            [ -n "$dev" ] && [ -e "/sys/class/net/${dev}" ] || { echo '{}'; return; }
+            tc -s qdisc show dev "$dev" 2>/dev/null | awk '
+                function num(v,   n, u) {
+                    n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+                    if (u ~ /^K/) n *= 1024; else if (u ~ /^M/) n *= 1048576; else if (u ~ /^G/) n *= 1073741824
+                    return n
+                }
+                /^qdisc / {
+                    sec = $2
+                    for (i = 1; i <= NF; i++) {
+                        if (sec == "nsstbl" && $i == "rate") rate = $(i + 1)
+                        if (sec == "nssfq_codel") {
+                            if ($i == "target") target = $(i + 1)
+                            if ($i == "limit") limit = $(i + 1)
+                            if ($i == "flows") flows = $(i + 1)
+                        }
+                    }
+                    next
+                }
+                /^ *Sent / {
+                    l = $0; gsub(/[(),]/, " ", l); n = split(l, f, " ")
+                    for (i = 1; i <= n; i++) {
+                        if (f[i] == "Sent") { sent[sec] = f[i + 1]; pk[sec] = f[i + 3] }
+                        if (f[i] == "dropped") dr[sec] = f[i + 1]
+                        if (f[i] == "overlimits") ov[sec] = f[i + 1]
+                    }
+                    next
+                }
+                /^ *backlog / { blb[sec] = num($2); blp[sec] = num($3); next }
+                /maxpacket/ {
+                    for (i = 1; i < NF; i++) {
+                        if ($i == "maxpacket") mp = $(i + 1)
+                        if ($i == "drop_overlimit") dol = $(i + 1)
+                        if ($i == "new_flow_count") nfc = $(i + 1)
+                        if ($i == "ecn_mark") ecn = $(i + 1)
+                    }
+                    next
+                }
+                /new_flows_len/ { nfl = $2; ofl = $4 }
+                END {
+                    if (sent["nsstbl"] == "") { print "{}"; exit }
+                    printf "{\"rate\":\"%s\",\"target\":\"%s\",\"limit\":\"%s\",\"flows\":%d,", rate, target, limit, flows + 0
+                    printf "\"sent\":%.0f,\"pkts\":%.0f,\"dropped\":%.0f,\"overlimits\":%.0f,", sent["nsstbl"], pk["nsstbl"], dr["nssfq_codel"] != "" ? dr["nssfq_codel"] : dr["nsstbl"], ov["nsstbl"]
+                    printf "\"backlog_b\":%.0f,\"backlog_p\":%.0f,\"ecn\":%.0f,\"drop_overlimit\":%.0f,", blb["nssfq_codel"] + blb["nsstbl"], blp["nssfq_codel"] + blp["nsstbl"], ecn + 0, dol + 0
+                    printf "\"new_flow_count\":%.0f,\"flows_new\":%d,\"flows_old\":%d,\"maxpacket\":%d}\n", nfc + 0, nfl + 0, ofl + 0, mp + 0
+                }'
+        }
+
+        # Same JSON as get_shaper_json, for a stock kernel shaper (cake, or htb
+        # with fq_codel leaves). The first qdisc listed is the root; drops, ECN
+        # and flow counts are summed over the fq_codel leaves if there are any.
+        # $2 = configured SQM rate in kbit, shown when the qdisc itself does not
+        # report one (htb keeps its rate in a class, not in the qdisc line).
+        get_shaper_json_generic() {
+            local dev="$1" cfg="${2:-0}"
+            [ -n "$dev" ] && [ -e "/sys/class/net/${dev}" ] || { echo '{}'; return; }
+            tc -s qdisc show dev "$dev" 2>/dev/null | awk -v CFG="$cfg" '
+                function num(v,   n, u) {
+                    n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+                    if (u ~ /^K/) n *= 1024; else if (u ~ /^M/) n *= 1048576; else if (u ~ /^G/) n *= 1073741824
+                    return n
+                }
+                /^qdisc / {
+                    q++; nm[q] = $2
+                    for (i = 1; i <= NF; i++) {
+                        if ($i == "bandwidth" && rate == "") rate = $(i + 1)
+                        if ($i == "target") tg[q] = $(i + 1)
+                        if ($i == "limit") lm[q] = $(i + 1)
+                        if ($i == "flows") fl[q] = $(i + 1)
+                    }
+                    next
+                }
+                /^ *Sent / {
+                    l = $0; gsub(/[(),]/, " ", l); n = split(l, f, " ")
+                    for (i = 1; i <= n; i++) {
+                        if (f[i] == "Sent") { sent[q] = f[i + 1]; pk[q] = f[i + 3] }
+                        if (f[i] == "dropped") dr[q] = f[i + 1]
+                        if (f[i] == "overlimits") ov[q] = f[i + 1]
+                    }
+                    next
+                }
+                /^ *backlog / { blb[q] = num($2); blp[q] = num($3); next }
+                /maxpacket/ {
+                    for (i = 1; i < NF; i++) {
+                        if ($i == "maxpacket") mp[q] = $(i + 1)
+                        if ($i == "drop_overlimit") dol[q] = $(i + 1)
+                        if ($i == "new_flow_count") nfc[q] = $(i + 1)
+                        if ($i == "ecn_mark") ecn[q] = $(i + 1)
+                    }
+                    next
+                }
+                /new_flows_len/ { nfl[q] = $2; ofl[q] = $4 }
+                END {
+                    if (q < 1 || sent[1] == "") { print "{}"; exit }
+                    lf = 0
+                    for (i = 1; i <= q; i++) if (nm[i] ~ /fq_codel$/) {
+                        if (!lf) lf = i
+                        D += dr[i]; E += ecn[i]; O += dol[i]; N += nfc[i]; FN += nfl[i]; FO += ofl[i]
+                        if (mp[i] + 0 > M) M = mp[i] + 0
+                    }
+                    if (!lf) { lf = 1; D = dr[1] }
+                    if (rate == "" && CFG + 0 > 0) rate = (CFG >= 1000) ? sprintf("%gMbit", CFG / 1000) : sprintf("%dkbit", CFG)
+                    printf "{\"rate\":\"%s\",\"target\":\"%s\",\"limit\":\"%s\",\"flows\":%d,", rate, tg[lf], lm[lf], fl[lf] + 0
+                    printf "\"sent\":%.0f,\"pkts\":%.0f,\"dropped\":%.0f,\"overlimits\":%.0f,", sent[1], pk[1], D, ov[1]
+                    printf "\"backlog_b\":%.0f,\"backlog_p\":%.0f,\"ecn\":%.0f,\"drop_overlimit\":%.0f,", blb[1], blp[1], E, O
+                    printf "\"new_flow_count\":%.0f,\"flows_new\":%d,\"flows_old\":%d,\"maxpacket\":%d}\n", N, FN, FO, M
+                }'
+        }
+
+        if [ "$BACKEND" = "nss" ]; then
+            SHAPER_FN=get_shaper_json
+        else
+            SHAPER_FN=get_shaper_json_generic
+        fi
+
+        tc_read_counters
+        IFACE_NAME=$(echo "$IFACE_LIST" | sed 's/ /, /g')
+
+        SHAPER_RX=$($SHAPER_FN "$RX_DEV" "$FOUND_DOWNLOAD")
+        SHAPER_TX=$($SHAPER_FN "$TX_IFACE" "$FOUND_UPLOAD")
+        [ -n "$SHAPER_RX" ] || SHAPER_RX='{}'
+        [ -n "$SHAPER_TX" ] || SHAPER_TX='{}'
+
+        # Per-WAN breakdown (empty array for the common single-queue case):
+        # the aggregate rx/tx/sqm fields above sum every enabled queue, which
+        # hides very asymmetric multi-WAN setups (e.g. "1100/120" hiding a
+        # 100/20 and a 1000/100 link) - see tc_wan_json() in trafficchart-common.
+        WAN_JSON=$(tc_wan_json)
+        [ -n "$WAN_JSON" ] || WAN_JSON='[]'
+
+        {
+        cat <<EOF
+${AGG_JSON},
+  "backend": "${BACKEND}",
+  "marking": ${MARKING},
+  "iface": {
+    "name": "${IFACE_NAME}",
+    "rx_bytes": ${RX_BYTES:-0},
+    "tx_bytes": ${TX_BYTES:-0},
+    "rx_source": "${RX_SOURCE}",
+    "tx_source": "${TX_SOURCE}"
+  },
+  "shaper": {
+    "rx": ${SHAPER_RX},
+    "tx": ${SHAPER_TX}
+  },
+  "sqm": {
+    "upload_kbit": ${FOUND_UPLOAD:-0},
+    "download_kbit": ${FOUND_DOWNLOAD:-0}
+  },
+  "wan": ${WAN_JSON}
+}
+EOF
+        } > "${CACHE_FILE}.tmp" && mv -f "${CACHE_FILE}.tmp" "$CACHE_FILE"
+        cat "$CACHE_FILE"
+        [ "$LOCKED" = "1" ] && flock -u 9 2>/dev/null
+        ;;
+esac
