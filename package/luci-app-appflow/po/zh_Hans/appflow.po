@@ -1,0 +1,487 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-appflow\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: zh_Hans\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "%d applications"
+msgstr "%d 个应用"
+
+msgid "%d apps, %d devices"
+msgstr "%d 个应用，%d 台设备"
+
+msgid "%d d ago"
+msgstr "%d 天前"
+
+msgid "%d flows"
+msgstr "%d 条流"
+
+msgid "%d h ago"
+msgstr "%d 小时前"
+
+msgid "%d min ago"
+msgstr "%d 分钟前"
+
+msgid "%d minute chart, %d second interval"
+msgstr "%d 分钟图表，%d 秒间隔"
+
+msgid "%d of %d applications"
+msgstr "共 %2$d 个应用中的 %1$d 个"
+
+msgid "%d s ago"
+msgstr "%d 秒前"
+
+msgid "%d s rate window"
+msgstr "%d 秒速率窗口"
+
+msgid "-%d min"
+msgstr "-%d 分钟"
+
+msgid "1 flow"
+msgstr "1 条流"
+
+msgid "12 buckets of 5 min"
+msgstr "12 个 5 分钟区间"
+
+msgid "AI assistants"
+msgstr "AI 助手"
+
+msgid "AI developer"
+msgstr "AI 开发"
+
+msgid "AI infrastructure"
+msgstr "AI 基础设施"
+
+msgid "AI media"
+msgstr "AI 媒体"
+
+msgid "Adult"
+msgstr "成人内容"
+
+msgid "Advertiser"
+msgstr "广告"
+
+msgid "All traffic"
+msgstr "全部流量"
+
+msgid "App traffic statistics"
+msgstr "应用流量统计"
+
+msgid "AppFlow"
+msgstr "应用流量"
+
+msgid "AppFlow also needs the Netify Agent running (%s), since that is where the per-application classification comes from."
+msgstr "AppFlow 还需要 Netify Agent 处于运行状态（%s），因为应用分类数据正是来自该组件。"
+
+msgid "AppFlow statistics cleared."
+msgstr "AppFlow 统计数据已清除。"
+
+msgid "AppFlow: access denied"
+msgstr "AppFlow：访问被拒绝"
+
+msgid "Application"
+msgstr "应用"
+
+msgid "Authentication"
+msgstr "身份验证"
+
+msgid "Business"
+msgstr "商务"
+
+msgid "CDN"
+msgstr "CDN"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Categories"
+msgstr "分类"
+
+msgid "Clear"
+msgstr "清除"
+
+msgid "Clear statistics"
+msgstr "清除统计数据"
+
+msgid "Client"
+msgstr "客户端"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Collecting data…"
+msgstr "正在采集数据…"
+
+msgid "Collecting samples…"
+msgstr "正在采集样本…"
+
+msgid "Collector state unknown"
+msgstr "采集器状态未知"
+
+msgid "Collector uptime: %s"
+msgstr "采集器运行时长：%s"
+
+msgid "Could not clear the statistics: %s"
+msgstr "无法清除统计数据：%s"
+
+msgid "Current rate"
+msgstr "当前速率"
+
+msgid "Cybersecurity"
+msgstr "网络安全"
+
+msgid "Data usage"
+msgstr "数据用量"
+
+msgid "Database"
+msgstr "数据库"
+
+msgid "Details"
+msgstr "详情"
+
+msgid "Device"
+msgstr "设备"
+
+msgid "Device: %s"
+msgstr "设备：%s"
+
+msgid "Devices"
+msgstr "设备"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Download: %s, upload: %s"
+msgstr "下载：%s，上传：%s"
+
+msgid "Downloaded"
+msgstr "已下载"
+
+msgid "Education"
+msgstr "教育"
+
+msgid "Entertainment"
+msgstr "娱乐"
+
+msgid "File Server"
+msgstr "文件服务器"
+
+msgid "File Sharing"
+msgstr "文件共享"
+
+msgid "Filter by application or category"
+msgstr "按应用或分类筛选"
+
+msgid "Filter by device name, MAC or IP"
+msgstr "按设备名称、MAC 或 IP 筛选"
+
+msgid "Financial"
+msgstr "金融"
+
+msgid "Flows tracked: %d"
+msgstr "已跟踪流数：%d"
+
+msgid "Gambling"
+msgstr "博彩"
+
+msgid "Games"
+msgstr "游戏"
+
+msgid "Government"
+msgstr "政府"
+
+msgid "Grant access to per-application traffic statistics. The 'apps' method is granted because the overview drills into a device to show what it is doing; it returns an aggregate per device and application from the live flow table. 'flows' remains ungranted: that is the per-connection table, with remote addresses and ports."
+msgstr "授予访问按应用流量统计数据的权限。由于概览页面会深入查看设备以显示其活动，因此授予了“apps”方法；该方法根据实时流量表返回按设备和应用汇总的数据。“flows”方法仍未授权，因为它提供的是包含远程地址和端口的逐连接数据。"
+
+msgid "Hosting"
+msgstr "托管"
+
+msgid "Hosts"
+msgstr "主机"
+
+msgid "Infrastructure"
+msgstr "基础设施"
+
+msgid "IoT Devices"
+msgstr "物联网设备"
+
+msgid "Last seen"
+msgstr "最后活动"
+
+msgid "Live per-application traffic, classified on the router by the Netify Agent. Nothing on this page leaves the device."
+msgstr "实时的应用级流量，由路由器上的 Netify Agent 进行分类。此页面的数据不会离开设备。"
+
+msgid "Live throughput"
+msgstr "实时吞吐量"
+
+msgid "Mail"
+msgstr "邮件"
+
+msgid "Malware"
+msgstr "恶意软件"
+
+msgid "Media"
+msgstr "媒体"
+
+msgid "Media Provider"
+msgstr "媒体服务商"
+
+msgid "Messaging"
+msgstr "即时通讯"
+
+msgid "Multicast / Broadcast"
+msgstr "组播 / 广播"
+
+msgid "Netify agent connected"
+msgstr "Netify Agent 已连接"
+
+msgid "Netify agent disconnected"
+msgstr "Netify Agent 未连接"
+
+msgid "Networking"
+msgstr "网络"
+
+msgid "News"
+msgstr "新闻"
+
+msgid "No active devices."
+msgstr "暂无活动设备。"
+
+msgid "No application matches \"%s\"."
+msgstr "没有匹配“%s”的应用。"
+
+msgid "No application matches that filter."
+msgstr "没有与该筛选条件匹配的应用。"
+
+msgid "No application traffic in the current window."
+msgstr "当前时间窗口内没有应用流量。"
+
+msgid "No application traffic recorded in the last hour."
+msgstr "最近一小时内没有记录到应用流量。"
+
+msgid "No categories yet."
+msgstr "暂无分类。"
+
+msgid "No data"
+msgstr "暂无数据"
+
+msgid "No device matches that filter."
+msgstr "没有与该筛选条件匹配的设备。"
+
+msgid "No per-device breakdown available for this application."
+msgstr "该应用暂无按设备的明细数据。"
+
+msgid "No time series available for this application."
+msgstr "该应用暂无时间序列数据。"
+
+msgid "OS & Software Updates"
+msgstr "操作系统与软件更新"
+
+msgid "Other"
+msgstr "其他"
+
+msgid "Overview"
+msgstr "概览"
+
+msgid "Past day"
+msgstr "过去一天"
+
+msgid "Past hour"
+msgstr "过去一小时"
+
+msgid "Past week"
+msgstr "过去一周"
+
+msgid "Per-application totals for the last hour, aggregated on the router from the Netify Agent's classification. Select a row for the per-device breakdown."
+msgstr "最近一小时内按应用汇总的流量总量，由路由器根据 Netify Agent 的分类结果统计得出。选择某一行可查看按设备的明细。"
+
+msgid "Portal"
+msgstr "门户"
+
+msgid "Printing"
+msgstr "打印"
+
+msgid "Proxy"
+msgstr "代理"
+
+msgid "Recreation"
+msgstr "休闲"
+
+msgid "Reference"
+msgstr "参考资料"
+
+msgid "Remote Desktop"
+msgstr "远程桌面"
+
+msgid "Requires history storage (planned)"
+msgstr "需要历史数据存储（计划中）"
+
+msgid "Router"
+msgstr "路由器"
+
+msgid "Share"
+msgstr "占比"
+
+msgid "Share of traffic by category"
+msgstr "各分类的流量占比"
+
+msgid "Shopping"
+msgstr "购物"
+
+msgid "Show all devices"
+msgstr "显示所有设备"
+
+msgid "Show only %s"
+msgstr "仅显示 %s"
+
+msgid "Show per-device details"
+msgstr "显示按设备的详情"
+
+msgid "Show per-device details for %s"
+msgstr "显示 %s 的设备明细"
+
+msgid "Show what %s is doing"
+msgstr "显示 %s 的活动"
+
+msgid "Showing the first %d applications; narrow the search to see the rest."
+msgstr "仅显示前 %d 个应用；请缩小搜索范围以查看其余应用。"
+
+msgid "Social Media"
+msgstr "社交媒体"
+
+msgid "Sort by %s"
+msgstr "按 %s 排序"
+
+msgid "Sports"
+msgstr "体育"
+
+msgid "Start typing a device name, MAC address or IP to find it. Click a device to see what it is doing in the applications list above. Press Clear to see all devices again."
+msgstr "输入设备名称、MAC 地址或 IP 即可查找设备。点击设备可在上方应用列表中查看其活动。点击“清除”可再次显示所有设备。"
+
+msgid "Start typing an application or category name to show only that traffic, or click a category in the Categories panel. Prefix a word with a minus to exclude it instead, for example -netflix. Press Clear to see all traffic again."
+msgstr "输入应用或分类名称以仅显示相应流量，也可点击“分类”面板中的分类。在词语前添加减号可将其排除，例如 -netflix。点击“清除”可再次显示全部流量。"
+
+msgid "Statistics"
+msgstr "统计"
+
+msgid "Streaming Media"
+msgstr "流媒体"
+
+msgid "Technology"
+msgstr "科技"
+
+msgid "Telco"
+msgstr "电信"
+
+msgid "The AppFlow collector could not be reached over ubus, so there is no traffic data to show. Start the service and this page picks it up automatically."
+msgstr "无法通过 ubus 连接到 AppFlow 采集器，因此没有可显示的流量数据。启动该服务后，此页面会自动获取数据。"
+
+msgid "The daemon could not return details for this application: %s"
+msgstr "守护进程未能返回该应用的详情：%s"
+
+msgid "This application is no longer in the daemon's aggregate table; it may have been pruned since the table was last refreshed."
+msgstr "该应用已不在守护进程的汇总表中；自上次刷新以来，该记录可能已被清理。"
+
+msgid "This resets the per-application, per-device and per-category counters and time buckets. Live flow tracking continues uninterrupted, so the figures on this page simply start again from zero."
+msgstr "此操作会重置按应用、按设备和按分类的计数器与时间分桶。实时流量跟踪不会中断，此页面上的数字只是重新从零开始计算。"
+
+msgid "Top 10 apps by bandwidth usage"
+msgstr "按带宽用量排名前 10 的应用"
+
+msgid "Top applications"
+msgstr "热门应用"
+
+msgid "Top devices"
+msgstr "热门设备"
+
+msgid "Total"
+msgstr "总计"
+
+msgid "Traffic over time"
+msgstr "流量趋势"
+
+msgid "Traffic per interval"
+msgstr "每个时间区间的流量"
+
+msgid "Unclassified"
+msgstr "未分类"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "Unknown device"
+msgstr "未知设备"
+
+msgid "Updated %s"
+msgstr "更新于 %s"
+
+msgid "Upload"
+msgstr "上传"
+
+msgid "Uploaded"
+msgstr "已上传"
+
+msgid "VPN"
+msgstr "VPN"
+
+msgid "VPN & Proxy"
+msgstr "VPN 与代理"
+
+msgid "VoIP"
+msgstr "VoIP"
+
+msgid "Web"
+msgstr "网页"
+
+msgid "appflowd is not running"
+msgstr "appflowd 未运行"
+
+msgid "appflowd is running, but this LuCI session was refused access to it over ubus (permission denied). This is an ACL problem, not a stopped service: confirm the luci-app-appflow ACL is installed and reload rpcd."
+msgstr "appflowd 正在运行，但当前 LuCI 会话通过 ubus 访问它时被拒绝（权限不足）。这是 ACL 权限问题，而非服务未启动：请确认已安装 luci-app-appflow 的 ACL 并重新加载 rpcd。"
+
+msgid "by cumulative bytes"
+msgstr "按累计字节数"
+
+msgid "by current rate"
+msgstr "按当前速率"
+
+msgid "just now"
+msgstr "刚刚"
+
+msgid "last 60 minutes"
+msgstr "最近 60 分钟"
+
+msgid "matching the filter, from flows in progress"
+msgstr "匹配筛选条件，来自进行中的流"
+
+msgid "netifyd %s"
+msgstr "netifyd %s"
+
+msgid "now"
+msgstr "现在"
+
+msgid "on %s, from flows in progress"
+msgstr "在 %s 上，来自进行中的流"
+
+msgid "router"
+msgstr "本机"
+
+msgid "sum of all applications"
+msgstr "所有应用的总和"
+
+msgid "top, by cumulative bytes"
+msgstr "按累计字节数排名"
+
+msgid "total"
+msgstr "总计"
+
+# The msgids below no longer exist in the template. Kept as
+# obsolete rather than deleted, which is what msgmerge does,
+# so a reworded string can be recovered by hand.
+#~ msgid "Grant access to per-application traffic statistics"
+#~ msgstr "授予访问按应用流量统计数据的权限"
+
+#~ msgid "Search app name"
+#~ msgstr "搜索应用名称"
