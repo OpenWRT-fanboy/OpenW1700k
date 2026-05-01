@@ -1,0 +1,24 @@
+{
+	"luci-app-appflow": {
+		"description": "Grant access to per-application traffic statistics. The 'apps' method is granted because the overview drills into a device to show what it is doing; it returns an aggregate per device and application from the live flow table. 'flows' remains ungranted: that is the per-connection table, with remote addresses and ports.",
+		"read": {
+			"ubus": {
+				"appflow": [
+					"app_detail",
+					"apps",
+					"devices",
+					"stats",
+					"status",
+					"summary"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"appflow": [
+					"reset"
+				]
+			}
+		}
+	}
+}
