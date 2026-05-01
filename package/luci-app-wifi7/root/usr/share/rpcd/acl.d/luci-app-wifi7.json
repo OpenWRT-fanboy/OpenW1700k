@@ -1,0 +1,35 @@
+{
+    "luci-mod-network-config": {
+        "description": "WiFi 7 MT7996 module",
+        "read": {
+            "file": {
+                "/sys/kernel/debug/ieee80211/phy0/mt76/sku_disable": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/fw_version": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/mat_table": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/dfs_status": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/band0/txpower_info": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/band1/txpower_info": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/mt76/band2/txpower_info": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/netdev:ap-mld-1/link-0/txpower": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/netdev:ap-mld-1/link-1/txpower": [ "read" ],
+                "/sys/kernel/debug/ieee80211/phy0/netdev:ap-mld-1/link-2/txpower": [ "read" ],
+                "/usr/sbin/hostapd_cli": [ "exec" ],
+                "/usr/sbin/iw": [ "exec" ],
+                "/sbin/wifi": [ "exec" ],
+                "/sbin/iw": [ "exec" ]
+            },
+            "ubus": {
+                "file": [ "exec" ],
+                "hostapd.*": [ "get_status", "get_clients" ],
+                "hostapd.ap-mld-1": [ "get_status" ]
+            },
+            "uci": [ "wireless" ]
+        },
+        "write": {
+            "uci": [ "wireless" ],
+            "ubus": {
+                "file": [ "exec" ]
+            }
+        }
+    }
+}
