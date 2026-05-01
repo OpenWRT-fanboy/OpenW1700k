@@ -1,0 +1,128 @@
+name: Build
+
+# Builds the luci-app-appflow .ipk/.apk via the official OpenWrt SDK action
+# (openwrt/gh-action-sdk). Evidence for the pattern below:
+#   - Action + env vars:  https://github.com/openwrt/gh-action-sdk (README + entrypoint.sh)
+#   - Real single-package luci-app repo using it the same way:
+#     https://github.com/ttimasdf/luci-app-xray/blob/main/.github/workflows/build.yml
+#   - SDK image tags (arch-version) confirmed to exist on Docker Hub:
+#     arm_cortex-a15_neon-vfpv4-25.12.5, aarch64_cortex-a53-25.12.5
+#     (https://hub.docker.com/r/openwrt/sdk/tags)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} (OpenWrt ${{ matrix.owrt }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Device under test — docs/DESIGN.md §2: Linksys EA8500, OpenWrt 25.12.5.
+          - arch: arm_cortex-a15_neon-vfpv4
+            owrt: 25.12.5
+          # Maintainer's production target class (aarch64, e.g. ipq807x/filogic boxes).
+          - arch: aarch64_cortex-a53
+            owrt: 25.12.5
+
+    steps:
+      - name: Check out repository
+        # A shallow checkout is sufficient. The previous full-history fetch was
+        # justified by gh-action-sdk diffing against git, but the staging step
+        # below copies the tree with --exclude '.git', so the SDK never sees a
+        # git dir at all. Package versions come from PKG_VERSION/PKG_RELEASE in
+        # the Makefile, not from git history.
+        uses: actions/checkout@v4
+
+      - name: Stage this package inside a feed directory
+        # openwrt/gh-action-sdk mounts FEED_DIR at /feed and registers it with
+        # `src-link`, so FEED_DIR must be a FEED: a directory *containing*
+        # package subdirectories. This repo is a single package whose Makefile
+        # sits at the root (the same layout upstream openwrt/luci uses under
+        # applications/), so it has to be nested one level here. Without this
+        # the feed index comes up empty ("Ignoring feed 'action' - index
+        # missing") and make reports "No rule to make target
+        # package/luci-app-appflow/download".
+        run: |
+          set -eu
+          feed="${{ runner.temp }}/feed"
+          mkdir -p "$feed/luci-app-appflow"
+          # icons/ is a SEPARATE package: icons/Makefile declares
+          # luci-app-appflow-icons with its own PKG_NAME and licences. It must
+          # therefore be staged as a SIBLING package directory in the feed,
+          # not as a subdirectory of the main package, or the feed index will
+          # not contain it and make reports "No rule to make target
+          # package/luci-app-appflow-icons/download".
+          rsync -a --exclude '.git' --exclude '.github' --exclude '/icons/' \
+            ./ "$feed/luci-app-appflow/"
+          rsync -a icons/ "$feed/luci-app-appflow-icons/"
+          echo "staged feed contents:"
+          ls -la "$feed"
+
+      - name: Build luci-app-appflow via OpenWrt SDK
+        uses: openwrt/gh-action-sdk@v11
+        env:
+          # ARCH selects the openwrt/sdk container tag directly (Dockerfile:
+          # FROM $CONTAINER:$ARCH) — must be "<arch>-<openwrt-version>".
+          ARCH: ${{ matrix.arch }}-${{ matrix.owrt }}
+          # The feed is the staged directory created in the previous step,
+          # NOT the repo root: see that step for why. Restricting PACKAGES to
+          # our own package names gives per-package download/check/compile
+          # steps instead of "build everything in the feed".
+          FEED_DIR: ${{ runner.temp }}/feed
+          PACKAGES: luci-app-appflow luci-app-appflow-icons
+          # Default is already 1; kept explicit since build.yml relies on it.
+          BUILD_LOG: 1
+
+      - name: Verify the expected packages were produced
+        # `if-no-files-found: error` on the upload step fires only when the glob
+        # matches NOTHING, so a run that produced one of two packages, or only
+        # unrelated dependency packages, would still upload and go green.
+        # Assert each package this repo claims to ship, by name.
+        run: |
+          set -eu
+          rc=0
+          for pkg in luci-app-appflow luci-app-appflow-icons; do
+            found=$(find bin/packages -type f \
+                      \( -name "${pkg}-[0-9]*.apk" -o -name "${pkg}_[0-9]*.ipk" \) 2>/dev/null || true)
+            if [ -z "$found" ]; then
+              echo "::error::expected package '$pkg' was not built"
+              rc=1
+            else
+              echo "ok: $found"
+            fi
+          done
+          exit "$rc"
+
+      - name: Upload built packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-appflow-${{ matrix.arch }}-${{ matrix.owrt }}
+          # OpenWrt package format varies by branch/target (ipk historically,
+          # apk on newer targets) — glob both, per FEEDNAME=action default.
+          path: |
+            bin/packages/**/*.ipk
+            bin/packages/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.arch }}-${{ matrix.owrt }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 14

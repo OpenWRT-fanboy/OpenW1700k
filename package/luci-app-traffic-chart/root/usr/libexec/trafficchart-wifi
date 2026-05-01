@@ -1,0 +1,90 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Export per-client counters from AP/mesh interfaces, one row per MAC:
+# MAC rx_bytes tx_bytes rx_packets tx_packets
+# On ppe-nss, ath11k's NSS peer-stats callback fills these station_info fields;
+# iw reads them through nl80211. Never silently publish an incomplete sample:
+# an iw failure leaves the aggregator's previous counters untouched.
+
+# No iw installed, or no wireless hardware/driver at all (wired-only router):
+# this is a valid, empty sample - not an error. Exit 0 without output so the
+# aggregator does not log "Wi-Fi station counters unavailable".
+command -v iw >/dev/null 2>&1 || exit 0
+[ -d /sys/class/ieee80211 ] && [ -n "$(ls /sys/class/ieee80211 2>/dev/null)" ] || exit 0
+
+ifaces=$(iw dev 2>/dev/null) || exit 1
+ifaces=$(printf '%s\n' "$ifaces" | awk '
+    $1 == "Interface" { iface = $2; next }
+    $1 == "type" && ($2 == "AP" || $2 == "AP/VLAN" || ($2 == "mesh" && $3 == "point")) {
+        if (iface != "") print iface
+    }
+')
+[ -n "$ifaces" ] || exit 0
+
+# Capture all interfaces first; a failed station dump must not be mistaken for
+# a valid empty sample (which would make the device disappear from live totals).
+data=
+success=0
+failed=0
+for iface in $ifaces; do
+    dump=$(iw dev "$iface" station dump 2>/dev/null)
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        failed=$((failed + 1))
+        continue
+    fi
+    success=$((success + 1))
+    data="${data}${dump}
+"
+done
+# One disabled/transient radio must not suppress counters from every other AP.
+# If all candidate station dumps failed, return an error so the aggregator
+# retains its previous sample and counter baselines.
+[ "$success" -gt 0 ] || exit 1
+
+rows=$(printf '%s\n' "$data" | awk '
+    function emit() {
+        if (mac ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/) {
+            stations++
+            if (have_rx || have_tx) {
+                counted++
+                printf "%s %.0f %.0f %.0f %.0f\n", mac, rx, tx, rxp, txp
+            }
+        }
+    }
+    /^Station[ \t]+/ {
+        emit()
+        mac = tolower($2)
+        rx = tx = rxp = txp = 0
+        have_rx = have_tx = 0
+        next
+    }
+    $1 == "rx" && ($2 == "bytes:" || $2 == "bytes64:") && $3 ~ /^[0-9]+$/ { rx = $3; have_rx = 1; next }
+    $1 == "tx" && ($2 == "bytes:" || $2 == "bytes64:") && $3 ~ /^[0-9]+$/ { tx = $3; have_tx = 1; next }
+    $1 == "rx" && $2 == "packets:" && $3 ~ /^[0-9]+$/ { rxp = $3; next }
+    $1 == "tx" && $2 == "packets:" && $3 ~ /^[0-9]+$/ { txp = $3; next }
+    END {
+        emit()
+        # Exit 2 distinctly when clients exist but the kernel does not expose
+        # station byte counters (e.g. missing ppe-nss ath11k peer_stats patch).
+        if (stations > 0 && counted == 0) exit 2
+    }
+')
+parse_rc=$?
+[ "$parse_rc" -eq 0 ] || exit "$parse_rc"
+# A successful empty dump from one radio cannot erase the last complete
+# sample while a different AP interface is failing.
+[ "$failed" -eq 0 ] || [ -n "$rows" ] || exit 1
+printf '%s\n' "$rows" | awk '
+    # A station can appear on more than one AP/mesh interface during roaming.
+    # Sum duplicate MAC rows so the aggregator sees one logical client.
+    NF == 5 {
+        mac = $1
+        rx[mac] += $2; tx[mac] += $3
+        rxp[mac] += $4; txp[mac] += $5
+    }
+    END {
+        for (mac in rx)
+            printf "%s %.0f %.0f %.0f %.0f\n", mac, rx[mac], tx[mac], rxp[mac], txp[mac]
+    }
+'
