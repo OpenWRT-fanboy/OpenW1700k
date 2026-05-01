@@ -1,0 +1,109 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# trafficchart-tc - post-shaping byte counters + shaper drop/ECN counters + backlog for
+# trafficchart-agg, plus everything the chart page needs to know about the shapers
+#
+# Prints TWO lines.
+#
+# Line 1:
+# "<rx_bytes> <tx_bytes> <rx_dropped> <rx_ecn> <tx_dropped> <tx_ecn> <rx_backlog> <tx_backlog>"
+#
+# (download / upload byte counters since the shaper qdiscs were created, summed
+# over all shaped devices; and the same qdiscs' cumulative dropped-packet
+# and ECN-mark counters, summed the same way; plus the momentary queue backlog in
+# bytes of those qdiscs). Any field that cannot be determined is printed as "-".
+#
+# Line 2: a JSON fragment (members without braces: tc_diag, backend,
+# iface, shaper, sqm, wan). trafficchart-agg stores it in classes.json, so
+# luci.trafficchart only has to serve that file. It used to compute all of this
+# (tc_resolve, several tc/awk, nft, uci ...) on every page request.
+#
+# trafficchart-agg calls this in the same loop iteration in which it reads
+# /proc/net/nf_conntrack and timestamps both with its own clock, so the link
+# rate (tc), the shaper health counters and the per-application / device /
+# destination rates (conntrack) all refer to the same moment. The daemon turns
+# the cumulative drop/ECN counters into per-bucket deltas the same way it
+# already does for application/device/destination totals (see hist_close() in
+# trafficchart-agg), so shaper health becomes part of the History tab instead
+# of only being visible live.
+#
+# Which devices are read (nss: download = nssifb, upload = WAN device without
+# VLAN suffix; generic: download = the ifb behind the ingress redirect, upload =
+# the shaped WAN device) is decided in trafficchart-common. This runs on
+# EVERY poll, so it is kept cheap: the device resolution is cached
+# (tc_resolve_cached) and every device costs one "tc" + one "awk"
+# (tc_dev_stats).
+
+# TC_COMMON: testing only
+. "${TC_COMMON:-/usr/libexec/trafficchart-common}" || { echo "- - - - - - - -"; exit 0; }
+
+tc_resolve_cached
+
+# sysfs counter without a fork; SYSV = value, fails if not readable / numeric
+sysv() {
+    SYSV=""
+    [ -r "$1" ] || return 1
+    read SYSV 2>/dev/null < "$1"
+    case "$SYSV" in ''|*[!0-9]*) SYSV=""; return 1 ;; esac
+    return 0
+}
+
+RX_SUM=0; RX_N=0; RXD_DROP=0; RXD_ECN=0; RXD_BL=0; RXD_OK=0; RX_SOURCE=""; SHAPER_RX=""
+for d in $RX_DEVS; do
+    set -- $(tc_dev_stats "$d" "$BACKEND" "$FOUND_DOWNLOAD")
+    [ -n "$1" ] || continue                      # device does not exist
+    b="$1"
+    src="${d} (${QTXT})"
+    case "$b" in ''|*[!0-9]*)
+        if sysv "$SYSNET/$d/statistics/tx_bytes"; then b="$SYSV"; src="${d} (sysfs${SYSNOTE})"; else b=""; fi ;;
+    esac
+    if [ -n "$b" ]; then RX_SUM=$((RX_SUM + b)); RX_N=$((RX_N + 1)); RX_SOURCE="${RX_SOURCE:+$RX_SOURCE, }${src}"; fi
+    RXD_DROP=$((RXD_DROP + ${2:-0}))
+    RXD_ECN=$((RXD_ECN + ${3:-0}))
+    RXD_BL=$((RXD_BL + ${4:-0}))
+    RXD_OK=1
+    [ "$d" = "$RX_DEV" ] && SHAPER_RX="$5"
+done
+# ingress shaping inactive: the raw rx counter is the best available signal
+for d in $RX_RAW; do
+    if sysv "$SYSNET/$d/statistics/rx_bytes"; then
+        RX_SUM=$((RX_SUM + SYSV)); RX_N=$((RX_N + 1))
+        if [ "$TC_FALLBACK" = "1" ]; then src="${d} (raw, no shaper)"; else src="${d} (raw, ingress shaping inactive)"; fi
+        RX_SOURCE="${RX_SOURCE:+$RX_SOURCE, }${src}"
+    fi
+done
+
+TX_SUM=0; TX_N=0; TXD_DROP=0; TXD_ECN=0; TXD_BL=0; TXD_OK=0; TX_SOURCE=""; SHAPER_TX=""
+for d in $TX_DEVS; do
+    set -- $(tc_dev_stats "$d" "$BACKEND" "$FOUND_UPLOAD")
+    [ -n "$1" ] || continue
+    b="$1"
+    src="${d} (${QTXT})"
+    case "$b" in ''|*[!0-9]*)
+        if sysv "$SYSNET/$d/statistics/tx_bytes"; then b="$SYSV"; src="${d} (sysfs${SYSNOTE})"; else b=""; fi ;;
+    esac
+    if [ -n "$b" ]; then TX_SUM=$((TX_SUM + b)); TX_N=$((TX_N + 1)); TX_SOURCE="${TX_SOURCE:+$TX_SOURCE, }${src}"; fi
+    TXD_DROP=$((TXD_DROP + ${2:-0}))
+    TXD_ECN=$((TXD_ECN + ${3:-0}))
+    TXD_BL=$((TXD_BL + ${4:-0}))
+    TXD_OK=1
+    [ "$d" = "$TX_IFACE" ] && SHAPER_TX="$5"
+done
+
+if [ "$RX_N" -gt 0 ]; then RX_BYTES="$RX_SUM"; else RX_BYTES=""; fi
+if [ "$TX_N" -gt 0 ]; then TX_BYTES="$TX_SUM"; else TX_BYTES=""; fi
+
+# JSON fragment for the page
+IFACE_NAME=""
+for d in $IFACE_LIST; do IFACE_NAME="${IFACE_NAME:+$IFACE_NAME, }${d}"; done
+WAN_JSON="[]"
+[ "${NWAN:-0}" -gt 1 ] && WAN_JSON=$(tc_wan_json)
+tc_build_frag
+
+# line 1: numbers for the aggregator
+[ "$RXD_OK" = "1" ] || { RXD_DROP="-"; RXD_ECN="-"; RXD_BL="-"; }
+[ "$TXD_OK" = "1" ] || { TXD_DROP="-"; TXD_ECN="-"; TXD_BL="-"; }
+echo "${RX_BYTES:--} ${TX_BYTES:--} ${RXD_DROP} ${RXD_ECN} ${TXD_DROP} ${TXD_ECN} ${RXD_BL} ${TXD_BL}"
+# line 2: fragment
+echo "$FRAG"
+exit 0

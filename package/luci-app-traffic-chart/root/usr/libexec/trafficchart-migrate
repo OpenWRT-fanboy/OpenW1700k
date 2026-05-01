@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# trafficchart-migrate - run by the package postinst (can also be run by hand).
+# nss-rk.qos was renamed to nss-trafficchart.qos: point SQM queues that still use the old
+# script name at the new one and remove the stale copies of the old script. SQM itself is NOT
+# restarted (restarting nssifb on a running router can crash it) - restart SQM when convenient.
+command -v uci >/dev/null 2>&1 || exit 0
+changed=0
+for sec in $(uci -q show sqm 2>/dev/null | sed -n "s/^sqm\.\([^.=]*\)\.script='nss-rk\.qos'\$/\1/p"); do
+    uci -q set "sqm.$sec.script=nss-trafficchart.qos" && changed=1
+done
+if [ "$changed" = 1 ]; then
+    uci -q commit sqm
+    logger -t trafficchart "SQM script renamed nss-rk.qos -> nss-trafficchart.qos in /etc/config/sqm; restart SQM to apply"
+    echo "trafficchart: /etc/config/sqm now uses nss-trafficchart.qos - restart SQM to apply (/etc/init.d/sqm restart)"
+fi
+rm -f /usr/lib/sqm/nss-rk.qos /usr/lib/sqm/nss-rk.qos.help
+exit 0

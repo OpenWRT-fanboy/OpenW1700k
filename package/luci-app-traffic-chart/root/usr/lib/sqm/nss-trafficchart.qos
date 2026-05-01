@@ -1,0 +1,659 @@
+###############################################################################
+# SPDX-License-Identifier: GPL-2.0-or-later
+# nss-trafficchart.qos - SQM shaper for NSS hardware offload (nsstbl + nssfq_codel)
+# with port based traffic classes (nftables packet marks + DSCP).
+# version 0.9.4 (20261001) - renamed from nss-rk.qos
+#
+# Based on simple.qos / nss.qos by ricsc, modified by rickk
+#   https://github.com/rickkdotnet/sqm-scripts-nss
+#   https://github.com/qosmio/sqm-scripts-nss   (ipq807x)
+#
+# Install as /usr/lib/sqm/nss-trafficchart.qos (together with nss-trafficchart.qos.help), then
+# select "fq_codel" and this script in the LuCI SQM page.
+#
+# Traffic classes = low byte of the packet/conntrack mark:
+#   0x1 PRIO    0x2 VOIP    0x3 GAME    0x4 WEB       0x5 STREAM  0x6 BULK
+#   0x7 P2P     0x8 BE      0x9 VPN     0xa MAIL      0xb NTP     0xc FTP
+#   0xd REMOTE  0xe DB      0xf MGMT    0x10 CONTAINER  0x11 IOT
+#   0x40 = router originated traffic (never classified)
+#
+# Notes:
+#  * Only the low byte of the packet/conntrack mark is touched, all other bits
+#    (mwan3 etc.) are preserved.
+#  * NSS offload: flows that are already accelerated never walk the ruleset
+#    again, so their kernel mark/DSCP stays as it was (a flow that grows past
+#    bulk_bytes after its acceleration keeps its old class).
+#  * The traffic chart does not use these marks; it reads conntrack and the qdisc
+#    counters only.
+#  * One SQM instance only: nssifb exists once and every instance recreates the
+#    nft table "inet qos_custom". Multi-WAN with NSS is not supported.
+#  * Options in /etc/config/trafficchart (section global) or LuCI "Traffic Chart
+#    Settings" (restart SQM afterwards):
+#      bulk_bytes '314572800'    TCP/UDP flows of class WEB/P2P/BE above this size (300 MiB) become BULK
+#      reset_ct_marks '1'        zero the ct marks on (re)start so every flow is classified again
+#                                (use 0 with mwan3)
+#      dns_redirect '0'          1 = redirect DNS (53) from all non-WAN interfaces (off by default)
+#      dns_redirect_exclude '..' interfaces left out of that redirect (e.g. wg0)
+#      ttl_fix '0'               1 = rewrite TTL/hop limit 63/127 to 64 (off by default)
+###############################################################################
+
+. /lib/functions.sh
+. ${SQM_LIB_DIR}/defaults.sh
+
+TC=${TC:-/sbin/tc}
+IP=${IP:-/sbin/ip}
+INSMOD=${INSMOD:-/sbin/insmod}
+
+# the low byte of the mark belongs to this script, other bits are left alone
+QOS_MASK=0xff
+QOS_KEEP=0xffffff00
+
+# nft statements that only change the low byte of the packet / conntrack mark
+qos_mset() { echo "meta mark set (meta mark & ${QOS_KEEP}) | $1"; }
+qos_cset() { echo "ct mark set (ct mark & ${QOS_KEEP}) | $1"; }
+
+# read a boolean option from /etc/config/trafficchart (default $2)
+qos_opt_flag() {
+    local v
+    v=$(uci -q get "trafficchart.global.$1" 2>/dev/null)
+    case "$v" in 1|on|yes|true|enabled) echo 1 ;; 0|off|no|false|disabled) echo 0 ;; *) echo "$2" ;; esac
+}
+
+# Never restart SQM from an interface hotplug event: bringing nssifb down/up
+# quickly tends to crash the router. NSS works on the hardware device, so an
+# existing setup can stay in place during ifup/ifdown. Only continue if there
+# is no qdisc on nssifb yet (interface was not up when SQM started at boot).
+if [ -n "${ACTION}" ] && [ -n "${INTERFACE}" ] && [ -n "${DEVICE}" ]; then
+  sqm_debug "${SCRIPT}: triggered by hotplug ${ACTION} for ${INTERFACE} (${DEVICE})"
+  if "$TC" qdisc show dev nssifb >/dev/null 2>&1; then
+    sqm_log "${SCRIPT}: TC qdisc is already installed on nssifb, not restarting to minimize the risk of crashes"
+    exit 0
+  fi
+  sqm_debug "No qdisc detected on nssifb, continuing with script"
+fi
+
+# Worst case fq_codel queue length in ms, used (with speed and MTU) to
+# calculate the queue limit if none is configured. Keep it on the high side so
+# codel sees all traffic right away (watch drop_overlimit in "tc -s qdisc show
+# dev nssifb"); the only cost is memory.
+MAXQLIMIT_MS=100
+
+# needed by sqm_stop to find the ifb interface
+CUR_IFB=nssifb
+
+# NSS only works on hardware interfaces: strip a VLAN suffix (eth0.7 -> eth0),
+# but keep the original name for the nft interface match set.
+IFACE_RAW="${IFACE}"
+IFACE=`echo "${IFACE}" | sed 's/\.[0-9]*//g'`
+
+# must use the stripped name too, or sqm_stop would look for the wrong file
+STATE_FILE="${SQM_STATE_DIR}/${IFACE}.state"
+
+# Kernel 5.10 frequently crashes when nssifb is deleted; on 5.15 the qdisc only
+# works on the first attach, so nssifb has to be deleted there.
+case "$(uname -r)" in
+  *5.10*) sqm_debug "Kernel version 5.10 found, will not delete nssifb on reload/stop" ;;
+  *) DELETENSSIFB=1 ;;
+esac
+
+# Waits (max ~2 min) until the WAN interface has an IPv4 or IPv6 address.
+# Never blocks forever: on timeout it warns and lets SQM start anyway.
+check_wan() {
+  local wan_json wan_ip wan_ip6 wan_up wan_logical
+  local tries=0
+  local max_tries=24   # 24 * 5s
+
+  # Resolve the ubus LOGICAL interface bound to the device this SQM instance shapes, instead of
+  # always asking about the fixed name "wan" (a queue on e.g. "wanb" or "wan6" would otherwise
+  # wait on, or trust the readiness of, the unrelated "wan"). Same lookup technique as the
+  # PPPoE shadow-device search in nft_setup() below. Falls back to "wan" if nothing matches
+  # (ubus/jsonfilter unavailable, or interface not registered yet).
+  wan_logical=$(ubus call network.interface dump 2>/dev/null | jsonfilter \
+      -e "@.interface[@.device='${IFACE_RAW}' || @.l3_device='${IFACE_RAW}' || @.device='${IFACE}' || @.l3_device='${IFACE}'].interface" 2>/dev/null | head -n1)
+  [ -n "${wan_logical}" ] || wan_logical="wan"
+  sqm_debug "check_wan: checking ubus logical interface '${wan_logical}' for device ${IFACE_RAW}"
+
+  while [ ${tries} -lt ${max_tries} ]; do
+    wan_json="$(ubus call network.interface.${wan_logical} status 2>/dev/null || true)"
+    wan_ip="$(echo "$wan_json" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null || true)"
+    wan_ip6="$(echo "$wan_json" | jsonfilter -e '@["ipv6-address"][0].address' 2>/dev/null || true)"
+    wan_up="$(echo "$wan_json" | jsonfilter -e '@.up' 2>/dev/null || true)"
+
+    if [ -n "$wan_ip" ] || [ -n "$wan_ip6" ]; then
+      sqm_debug "check_wan: ${wan_logical} ready (ipv4=${wan_ip:-none} ipv6=${wan_ip6:-none})"
+      return 0
+    fi
+
+    if [ "$wan_up" = "true" ]; then
+      sqm_debug "check_wan: ${wan_logical} is up but has no address yet (attempt $((tries+1))/${max_tries}), sleeping 5 seconds..."
+    else
+      sqm_debug "check_wan: ${wan_logical} not ready yet (attempt $((tries+1))/${max_tries}), sleeping 5 seconds..."
+    fi
+
+    tries=$((tries + 1))
+    sleep 5
+  done
+
+  sqm_warn "check_wan: timed out after $((max_tries * 5))s waiting for ${wan_logical} to get an address (neither IPv4 nor IPv6). Continuing anyway - SQM may start before the WAN is fully ready."
+  return 0
+}
+
+# queue limit in packets = (bandwidth in bytes/s) * max delay / MTU
+# $1 = speed (kbit), $2 = MTU, $3 = max delay (ms)
+calc_limit() {
+  [ -z "${MINLIMIT}" ] && MINLIMIT=200
+  local LIMIT
+
+  LIMIT=$( awk -v SPEED=$1 -v MTU=$2 -v MAXDELAY=$3 'BEGIN {print(int((SPEED*125)*(MAXDELAY/1000)/MTU))}' )
+  sqm_debug "calc_limit: Queue limit should be $LIMIT packets for speed $1, MTU $2 and maximum delay $3 ms"
+  if [ ${LIMIT} -lt ${MINLIMIT} ]; then
+    LIMIT=${MINLIMIT}
+    sqm_debug "calc_limit: calculated limit is lower than ${MINLIMIT}, raising to ${MINLIMIT}."
+  fi
+  echo $LIMIT
+}
+
+###############################################################################
+# nftables classification
+#
+# The ruleset is generated: DSCP per class is defined once (QOS_DSCP) and used
+# both for flows that already carry a class mark and for new classifications.
+###############################################################################
+
+# class mark (hex, without 0x) : DSCP
+#
+# One DSCP per class; the class marks that share a DSCP are grouped in one nft set below.
+QOS_DSCP="1:ef 2:af41 3:cs4 4:af21 5:af21 6:cs1 7:cs0 8:cs0 9:af31 a:af11 b:cs2 c:cs1 d:af21 e:af21 f:cs2 10:cs0 11:af21"
+
+# Rules of chain qos_dscp: one rule per distinct DSCP and IP family, the class
+# marks that share a DSCP are grouped in a set (generated from QOS_DSCP).
+qos_dscp_rules() {
+    local e d x list seen=""
+    for e in ${QOS_DSCP}; do
+        d="${e#*:}"
+        case " ${seen} " in *" ${d} "*) continue ;; esac
+        seen="${seen} ${d}"
+        list=""
+        for x in ${QOS_DSCP}; do
+            [ "${x#*:}" = "${d}" ] && list="${list:+${list}, }0x${x%%:*}"
+        done
+        echo "        meta mark & ${QOS_MASK} == { ${list} } meta nfproto ipv4 ip dscp set ${d}"
+        echo "        meta mark & ${QOS_MASK} == { ${list} } meta nfproto ipv6 ip6 dscp set ${d}"
+    done
+}
+
+# Flows that already carry a class mark: take it over from conntrack. One rule per
+# class with a constant: nft/the kernel cannot OR two register values.
+qos_ctrestore() {
+    local e m
+    for e in ${QOS_DSCP}; do
+        m="0x${e%%:*}"
+        echo "ct mark & ${QOS_MASK} == ${m} $(qos_mset ${m})"
+    done
+}
+
+# Already classified packet: re-apply the DSCP and stop.
+qos_restore() {
+    echo "meta mark & ${QOS_MASK} == 0x1-0x11 jump qos_dscp"
+    echo "meta mark & ${QOS_MASK} == 0x1-0x11 return"
+}
+
+# Classify: set packet + connection mark, then goto qos_dscp (DSCP). The first
+# matching rule wins, the order of the rules IS the priority.
+qos_set() { echo "$(qos_mset $1) $(qos_cset $1) goto qos_dscp"; }
+
+# Mark traffic of protocol $1 (tcp/udp) with class $3 if source OR destination
+# port is in the set $2.
+qos_ports() {
+    echo "$1 dport $2 $(qos_set $3)"
+    echo "$1 sport $2 $(qos_set $3)"
+}
+
+nft_setup() {
+    # --- WAN interface match set: the VLAN stripped device, the original
+    # (possibly VLAN tagged) name and - if one is stacked on top of it - the
+    # PPPoE device. With NSS offload, accelerated PPPoE flows can show up with
+    # either name. The PPPoE device is looked up via ubus and only accepted if
+    # it sits on THIS instance's device, never just "the first pppoe interface"
+    # (multi-wan).
+    local IFSET="\"${IFACE}\""
+    local PPPOE_MSS_DEV=""
+    local PPPOE_SHADOW
+    if [ -n "${IFACE_RAW}" ] && [ "${IFACE_RAW}" != "${IFACE}" ]; then
+        IFSET="${IFSET}, \"${IFACE_RAW}\""
+    fi
+    case "${IFACE}" in
+        pppoe-*)
+            PPPOE_MSS_DEV="${IFACE}"
+            ;;
+        *)
+            PPPOE_SHADOW=$(ubus call network.interface dump 2>/dev/null | jsonfilter \
+                -e "@.interface[@.proto='pppoe' && @.device='${IFACE_RAW}'].l3_device" 2>/dev/null | head -n1)
+            if [ -z "${PPPOE_SHADOW}" ] && [ "${IFACE_RAW}" != "${IFACE}" ]; then
+                PPPOE_SHADOW=$(ubus call network.interface dump 2>/dev/null | jsonfilter \
+                    -e "@.interface[@.proto='pppoe' && @.device='${IFACE}'].l3_device" 2>/dev/null | head -n1)
+            fi
+            if [ -n "${PPPOE_SHADOW}" ]; then
+                sqm_debug "nft_setup: found PPPoE shadow device ${PPPOE_SHADOW} layered on ${IFACE_RAW}, adding to match set"
+                IFSET="${IFSET}, \"${PPPOE_SHADOW}\""
+                PPPOE_MSS_DEV="${PPPOE_SHADOW}"
+            fi
+            ;;
+    esac
+    sqm_debug "nft_setup: WAN interface match set: { ${IFSET} }"
+
+    # --- BULK: TCP/UDP flows of class WEB / P2P / BE above this size are demoted to BULK ---
+    # 300 MiB, deliberately high: with a low value every longer video stream
+    # flipped to BULK and the WEB/BULK split depended on connection age.
+    # Configurable: option bulk_bytes in /etc/config/trafficchart (LuCI: Traffic Chart Settings).
+    local BULK_BYTES
+    BULK_BYTES=$(uci -q get trafficchart.global.bulk_bytes 2>/dev/null)
+    case "${BULK_BYTES}" in ''|*[!0-9]*) BULK_BYTES=314572800 ;; esac
+
+    # BULK is class based: only flows already classified WEB (0x4), P2P (0x7)
+    # or BE (0x8) can be demoted. Every class
+    # that is identified by port/protocol stays what it is, so no port
+    # exemption lists (and no second copy to keep in sync) are needed. It also
+    # covers dynamic ports, e.g. FTP passive data (class 0xc via the helper).
+
+    # --- Passive mode FTP via the nf_conntrack_ftp helper (optional) ---
+    # The helper announces the negotiated data port as a RELATED conntrack
+    # entry, which static port rules can never catch. The module is not part
+    # of every build, and declaring a "ct helper" for an unknown type would make
+    # the whole ruleset fail to load - so it is only added if the module is
+    # actually loaded. Without it only ports 20/21 are classified as FTP.
+    local FTP_HELPER_DECL="" FTP_HELPER_SET="" FTP_HELPER_MATCH=""
+    if [ -d /sys/module/nf_conntrack_ftp ] || lsmod 2>/dev/null | grep -q '^nf_conntrack_ftp'; then
+        sqm_debug "nft_setup: nf_conntrack_ftp helper detected, enabling passive-mode FTP classification"
+        FTP_HELPER_DECL="
+    ct helper ftp_helper {
+        type \"ftp\" protocol tcp
+    }
+"
+        FTP_HELPER_SET="tcp dport 21 ct helper set \"ftp_helper\"
+        tcp sport 21 ct helper set \"ftp_helper\""
+        FTP_HELPER_MATCH="ct helper \"ftp_helper\" $(qos_set 0xc)"
+    else
+        sqm_debug "nft_setup: nf_conntrack_ftp helper not loaded, passive-mode FTP data will fall through to BE"
+    fi
+
+    # --- MSS clamping for PPPoE (IPv4 + IPv6) ---
+    # PPPoE has an MTU of 1492; clamping the MSS of SYN/SYN-ACK to the route
+    # MTU avoids stalls where PMTUD does not work. Only the OUTGOING interface
+    # is matched, so the MSS can only ever be lowered.
+    local MSS_CLAMP_CHAIN=""
+    if [ -n "${PPPOE_MSS_DEV}" ]; then
+        sqm_debug "nft_setup: PPPoE detected (${PPPOE_MSS_DEV}), will add MSS clamp rule for IPv4 + IPv6"
+        MSS_CLAMP_CHAIN="
+    chain forward_mangle {
+        type filter hook forward priority mangle; policy accept;
+        oifname \"${PPPOE_MSS_DEV}\" tcp flags syn tcp option maxseg size set rt mtu
+    }
+"
+    fi
+
+    # --- optional extras (both OFF by default) ---
+    local NAT_CHAIN="" TTL_RULES="" DNS_SET="${IFSET}" x
+    if [ "$(qos_opt_flag dns_redirect 0)" = "1" ]; then
+        for x in $(uci -q get trafficchart.global.dns_redirect_exclude 2>/dev/null); do
+            case "$x" in
+                ''|*[!A-Za-z0-9._-]*) sqm_warn "nft_setup: ignoring invalid dns_redirect_exclude entry '$x'" ;;
+                *) DNS_SET="${DNS_SET}, \"${x}\"" ;;
+            esac
+        done
+        sqm_debug "nft_setup: DNS redirect enabled, not applied to: { ${DNS_SET} }"
+        NAT_CHAIN="
+    # Redirect DNS from everything that is not a WAN (or excluded) device to
+    # the router's own resolver (no hardcoded LAN bridge name).
+    chain prerouting_nat {
+        type nat hook prerouting priority dstnat; policy accept;
+        iifname != { ${DNS_SET} } fib daddr type != local udp dport 53 redirect to 53
+        iifname != { ${DNS_SET} } fib daddr type != local tcp dport 53 redirect to 53
+    }
+"
+    fi
+    if [ "$(qos_opt_flag ttl_fix 0)" = "1" ]; then
+        sqm_debug "nft_setup: TTL/hop limit rewrite (63/127 -> 64) enabled"
+        TTL_RULES="
+        meta nfproto ipv4 ip ttl 63 ip ttl set 64
+        meta nfproto ipv4 ip ttl 127 ip ttl set 64
+        meta nfproto ipv6 ip6 hoplimit 63 ip6 hoplimit set 64
+        meta nfproto ipv6 ip6 hoplimit 127 ip6 hoplimit set 64
+"
+    fi
+
+    # ct bytes (BULK rule) needs conntrack accounting
+    [ -w /proc/sys/net/netfilter/nf_conntrack_acct ] && echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct
+
+    # One atomic transaction: if the old table exists, delete it and then add
+    # the complete replacement. nft applies the whole batch transactionally,
+    # so a parse/validation failure rolls the delete back and preserves the
+    # old classification table. On first start there is nothing to delete.
+    QOS_NFT_FILE=/tmp/nss-trafficchart-qos.nft
+    cat > "${QOS_NFT_FILE}" <<EOF
+$(nft list table inet qos_custom >/dev/null 2>&1 && echo 'delete table inet qos_custom')
+add table inet qos_custom
+table inet qos_custom {
+${FTP_HELPER_DECL}
+${NAT_CHAIN}${MSS_CLAMP_CHAIN}
+    # class mark -> DSCP (reached by goto/jump; when it ends, evaluation continues
+    # after the jump to qos_classify)
+    chain qos_dscp {
+$(qos_dscp_rules)
+    }
+
+    chain prerouting_mangle {
+        type filter hook prerouting priority mangle; policy accept;
+        iifname { ${IFSET} } meta mark & ${QOS_MASK} == 0x00 jump qos_classify
+    }
+
+    chain postrouting_mangle {
+        type filter hook postrouting priority mangle; policy accept;
+        oifname { ${IFSET} } meta mark & ${QOS_MASK} == 0x00 jump qos_classify
+${TTL_RULES}    }
+
+    # Router's own traffic: DNS/NTP as af42, the rest as be; both marked 0x40
+    # so qos_classify skips it.
+    chain output_mangle {
+        type route hook output priority mangle; policy accept;
+
+        oifname { ${IFSET} } udp dport { 53, 123 } meta nfproto ipv4 ip dscp set af42
+        oifname { ${IFSET} } udp dport { 53, 123 } meta nfproto ipv6 ip6 dscp set af42
+        oifname { ${IFSET} } udp dport { 53, 123 } $(qos_mset 0x40)
+
+        oifname { ${IFSET} } meta mark & ${QOS_MASK} == 0x00 meta nfproto ipv4 ip dscp set be
+        oifname { ${IFSET} } meta mark & ${QOS_MASK} == 0x00 meta nfproto ipv6 ip6 dscp set be
+        oifname { ${IFSET} } meta mark & ${QOS_MASK} == 0x00 $(qos_mset 0x40)
+    }
+
+    # Shared by both directions. Every rule sets the class mark (packet + conntrack)
+    # and goes to qos_dscp, so the first rule that matches wins - the
+    # order of the blocks IS the priority.
+    chain qos_classify {
+        # restore the class of an already classified flow; 0x40 = router traffic
+$(qos_ctrestore)
+        meta mark & ${QOS_MASK} == 0x40 return
+
+        # Flows above BULK_BYTES become BULK (0x6) - only WEB / P2P / BE, the
+        # restore rule for 0x6 below then sets the DSCP.
+        meta l4proto { tcp, udp } meta mark & ${QOS_MASK} == { 0x4, 0x7, 0x8 } ct bytes > ${BULK_BYTES} $(qos_mset 0x6) $(qos_cset 0x6)
+
+        # already classified: re-apply DSCP and stop
+$(qos_restore)
+
+        # 0x1 PRIO: ICMP, DNS (udp: dport only, tcp: both), DoT, DHCP/DHCPv6, legacy nameserver, mDNS, LLMNR
+        # (DoH is plain HTTPS on 443 and cannot be told apart without DPI)
+        ip protocol icmp $(qos_set 0x1)
+        ip6 nexthdr icmpv6 $(qos_set 0x1)
+        udp dport { 53, 67, 68, 546, 547, 42, 5353, 5355 } $(qos_set 0x1)
+        udp sport { 67, 68, 546, 547, 42, 5353, 5355 } $(qos_set 0x1)
+$(qos_ports tcp "{ 53, 853, 42 }" 0x1)
+
+        # 0x2 VOIP: SIP, STUN/TURN, Zoom RTP, Cisco SCCP. The generic udp
+        # 10000-20000 range is NOT used: too many false positives (IPTV, WebRTC, games).
+$(qos_ports udp "{ 3478, 3479, 5060, 5061, 8801-8810 }" 0x2)
+$(qos_ports tcp "{ 5060, 5061, 8801-8810, 2000 }" 0x2)
+
+        # 0x3 GAME: Xbox, PSN, Steam, Battle.net (udp 3478/3479 are already VOIP above)
+$(qos_ports udp "{ 3074, 3480, 27000-27050, 6112-6119 }" 0x3)
+$(qos_ports tcp "{ 3478-3480, 6112-6119 }" 0x3)
+
+        # 0x9 VPN: WireGuard, OpenVPN, IPsec/IKEv2, L2TP
+$(qos_ports udp "{ 51820, 1194, 500, 4500, 1701 }" 0x9)
+$(qos_ports tcp 1194 0x9)
+
+        # 0xa MAIL: SMTP/IMAP/POP3 (+TLS), Exchange routing engine
+$(qos_ports tcp "{ 25, 465, 587, 110, 995, 143, 993, 691 }" 0xa)
+
+        # 0xb NTP: NTP + legacy time protocol
+$(qos_ports udp "{ 123, 37 }" 0xb)
+$(qos_ports tcp 37 0xb)
+
+        # 0xc FTP: FTP (+ passive data if the helper is loaded), TFTP, rpcbind/NFS,
+        # NetBIOS, SMB, FTPS, rsync
+        ${FTP_HELPER_SET}
+$(qos_ports tcp "{ 20, 21, 111, 137, 139, 445, 989, 990, 873 }" 0xc)
+        ${FTP_HELPER_MATCH}
+$(qos_ports udp "{ 69, 111, 137, 139 }" 0xc)
+
+        # 0xd REMOTE: interactive admin sessions and auth - SSH, RDP, VNC,
+        # Telnet, TACACS, Kerberos, LDAP(S), Webmin, Cockpit
+$(qos_ports tcp "{ 22, 3389, 5900, 23, 49, 88, 389, 464, 636, 5500, 10000, 9090 }" 0xd)
+$(qos_ports udp "{ 49, 88, 389, 464, 636 }" 0xd)
+
+        # 0xe DB: MSSQL, Oracle, MySQL, PostgreSQL, MongoDB, Redis, Memcached
+        # (1434/udp = MSSQL Browser)
+$(qos_ports tcp "{ 1433, 1521, 3306, 5432, 27017, 6379, 11211 }" 0xe)
+$(qos_ports udp "{ 1434, 11211 }" 0xe)
+
+        # 0xf MGMT: passive monitoring - SNMP, syslog, IPMI, VMware
+$(qos_ports tcp "{ 161, 162, 902 }" 0xf)
+$(qos_ports udp "{ 161, 162, 514, 623, 902 }" 0xf)
+
+        # 0x5 STREAM: QUIC on 443/8443 - the only way into STREAM. Other HTTP/3
+        # ports cannot be caught without DPI.
+$(qos_ports udp "{ 443, 8443 }" 0x5)
+
+        # 0x7 P2P: BitTorrent typical ports
+$(qos_ports udp "{ 6881-6999, 51413, 6969 }" 0x7)
+$(qos_ports tcp "{ 6881-6999, 51413, 6969 }" 0x7)
+
+        # 0x4 WEB: HTTP/HTTPS (+ alt ports 8080/8443)
+$(qos_ports tcp "{ 80, 443, 8080, 8443 }" 0x4)
+
+        # 0x10 CONTAINER: Docker API, Kubernetes API, Portainer
+$(qos_ports tcp "{ 2375, 2376, 6443, 9000 }" 0x10)
+
+        # 0x11 IOT: MQTT, Home Assistant, SSDP/UPnP, CoAP
+$(qos_ports tcp "{ 1883, 8883, 8123 }" 0x11)
+$(qos_ports udp "{ 1900, 5683 }" 0x11)
+
+        # 0x8 BE: everything else
+        meta mark & ${QOS_MASK} == 0x00 $(qos_set 0x8)
+    }
+}
+EOF
+    nft -f "${QOS_NFT_FILE}"
+    if [ $? -ne 0 ]; then
+        sqm_error "nft_setup: loading the nftables ruleset failed (see ${QOS_NFT_FILE}, check with: nft -c -f ${QOS_NFT_FILE}) - table inet qos_custom unchanged"
+        return 1
+    fi
+
+    # reset old marks so every flow is classified again with the new ruleset.
+    # conntrack cannot clear just the low byte, this zeroes the WHOLE ct mark. With
+    # mwan3 (or anything else that keeps state in the higher bits) that can re-route
+    # running flows, so it can be switched off: option reset_ct_marks '0' (default 1).
+    # Without it flows keep the class they already have until they end.
+    if [ "$(qos_opt_flag reset_ct_marks 1)" = "1" ]; then
+        command -v conntrack >/dev/null 2>&1 && conntrack -U -m 0 >/dev/null 2>&1
+    fi
+}
+
+###############################################################################
+# NSS shaper
+###############################################################################
+
+cake_egress() { sqm_error "The NSS shaper is only compatible with fq_codel."; return 1; }
+cake_ingress() { sqm_error "The NSS shaper is only compatible with fq_codel."; return 1; }
+
+# nsstbl: NSS token bucket shaper, root qdisc "1:"
+# $1 = device, $2 = speed (kbit), $3 = burst (us), $4 = MTU
+add_nsstbl() {
+  local IF=$1 SPEED=$2 BURST_US=$3 MTU=$4 BURST
+  sqm_debug "add_nsstbl $IF: speed:$SPEED burst:$BURST_US mtu:$MTU overhead:$OVERHEAD"
+
+  # Burst trades CPU load against shaper strictness. With NSS the effect is
+  # small; the SQM default of 1000us is a good sweet spot and, oddly, a bit more
+  # stable in throughput and latency than a minimal burst.
+  BURST=`get_burst ${MTU} ${SPEED} ${BURST_US}`
+
+  # round to a multiple of the MTU
+  BURST=`echo ${BURST} | awk -v MTU=$MTU '{print sprintf("%.0f",$0/MTU)*MTU}'`
+
+  "$TC" qdisc add dev "$IF" root handle 1: nsstbl rate ${SPEED}kbit burst ${BURST} mtu ${MTU}b || return 1
+  return 0
+}
+
+# nssfq_codel below the shaper
+# $1 = device, $2 = speed (kbit), $3 = codel target, $4 = queue limit, $5 = MTU, $6 = extra options
+add_nssfq_codel() {
+  local IF=$1 SPEED=$2 TARGET=$3 LIMIT=$4 MTU=$5 QDISC_OPTS=$6 QUANTUM
+  sqm_debug "add_nssfq_codel $IF: speed:$SPEED target:$TARGET limit:$LIMIT mtu:$MTU opts:$QDISC_OPTS"
+
+  # codel interval (settable via eqdisc_opts): should be the "worst case"
+  # latency to your services; 100ms works unless the link is so slow that
+  # target > interval (you would not use NSS then).
+  case "${QDISC_OPTS}" in
+    *interval*) ;;
+    *) sqm_debug "add_nssfq_codel $IF: No interval specified, defaulting to 100ms"; QDISC_OPTS="interval 100ms ${QDISC_OPTS}" ;;
+  esac
+
+  # Quantum = bytes dequeued at once. At MTU all packets weigh the same; a
+  # smaller quantum favours small packets. Below 100 Mbit that helps, so use ~MTU/5.
+  # https://www.bufferbloat.net/projects/codel/wiki/Best_practices_for_benchmarking_Codel_and_FQ_Codel/
+  case "${QDISC_OPTS}" in
+    *quantum*) ;;
+    *) let QUANTUM=MTU
+       if [ ${SPEED} -lt 100000 ]; then
+         let QUANTUM/=5
+         let QUANTUM+=1
+       fi
+       QDISC_OPTS="`get_quantum ${QUANTUM}` ${QDISC_OPTS}" ;;
+  esac
+
+  # number of flow buckets, required by nssfq_codel
+  case "${QDISC_OPTS}" in
+    *flows*) ;;
+    *) QDISC_OPTS="flows 1024 ${QDISC_OPTS}" ;;
+  esac
+
+  "$TC" qdisc add dev "$IF" parent 1: handle 10: nssfq_codel `get_limit $LIMIT` `get_target ${TARGET} ${SPEED}` ${QDISC_OPTS} set_default || return 1
+  return 0
+}
+
+egress() {
+  [ -z "$ETARGET" ] && ETARGET="5ms"
+
+  # Without an overhead setting (0), tc shows 1518 byte packets hitting the shaper
+  # (header added by NSS), so err on the large side: MTU + 18. Set an overhead
+  # other than 0 (e.g. 14) in the SQM config to change that.
+  local MTU=$( get_mtu ${IFACE} )
+  [ "${OVERHEAD:-0}" -eq 0 ] && OVERHEAD=18
+  let MTU+=OVERHEAD
+
+  [ -z "$ELIMIT" ] && ELIMIT=$(calc_limit ${UPLINK} ${MTU} ${MAXQLIMIT_MS})
+
+  add_nsstbl ${IFACE} ${UPLINK} ${ESHAPER_BURST_DUR_US} ${MTU} || { sqm_error "egress: failed to add shaper"; return 1; }
+  add_nssfq_codel ${IFACE} ${UPLINK} ${ETARGET} ${ELIMIT} ${MTU} "${EQDISC_OPTS}" || { sqm_error "egress: failed to add qdisc"; return 1; }
+  return 0
+}
+
+ingress() {
+  [ -z "$ITARGET" ] && ITARGET="5ms"
+
+  local MTU=$( get_mtu $DEV )
+  [ "${OVERHEAD:-0}" -eq 0 ] && OVERHEAD=18
+  let MTU+=OVERHEAD
+
+  [ -z "$ILIMIT" ] && ILIMIT=$(calc_limit ${DOWNLINK} ${MTU} ${MAXQLIMIT_MS})
+
+  add_nsstbl ${DEV} ${DOWNLINK} ${ISHAPER_BURST_DUR_US} ${MTU} || { sqm_error "ingress: failed to add shaper"; return 1; }
+  add_nssfq_codel ${DEV} ${DOWNLINK} ${ITARGET} ${ILIMIT} ${MTU} "${IQDISC_OPTS}" || { sqm_error "ingress: failed to add qdisc"; return 1; }
+
+  # The system likes to crash here, especially under load - give it a second
+  # before bringing the interface up.
+  sqm_debug "ingress: Sleeping for a second.. "
+  sleep 1
+  sqm_debug "ingress: Enabling the $DEV ifb interface.. "
+  "$IP" link set up "$DEV" || return 1
+  return 0
+}
+
+# load the nss_ifb module and create nssifb if needed (the stock sqm
+# do_modules does not load nss_ifb)
+sqm_prepare_script() {
+    if [ ! -d /sys/module/nss_ifb ]; then
+      sqm_log "sqm_prepare_script: required nss_ifb kernel module not detected, loading it now.. "
+      "$INSMOD" nss-ifb 2>>${OUTPUT_TARGET} || { sqm_error "Kernel module failed to load"; return 1; }
+    fi
+
+    # in theory allows changing the device the ifb is active on (not tested)
+    printf '%s' "${IFACE}" > /sys/module/nss_ifb/parameters/nss_dev_name
+
+    # the stock sqm-stop deletes nssifb
+    if [ ! -d /sys/devices/virtual/net/nssifb ]; then
+      sqm_log "sqm_prepare_script: nssifb interface does not exist, creating.. "
+      "$IP" link add dev nssifb type nss_ifb || return 1
+    fi
+    # one SQM instance only with NSS (see header)
+    if [ "$(uci -q show sqm 2>/dev/null | grep -c "\.enabled='1'")" -gt 1 ]; then
+        sqm_warn "sqm_prepare_script: more than one SQM queue is enabled - nss-trafficchart.qos supports a single instance (shared nssifb / nft table)"
+    fi
+    nft_setup
+    return 0
+}
+
+# Replaces the stock sqm_start, which calls verify_qdisc and thereby creates
+# (and destroys) ifb interfaces - not wanted with NSS. Same logic otherwise.
+sqm_start() {
+    sqm_debug "sqm_start: Starting sqm_start from nss-trafficchart.qos"
+    [ -n "$IFACE" ] || return
+
+    check_wan
+    sqm_prepare_script
+    DEV="nssifb"
+
+    if [ "${UPLINK}" -ne 0 ]; then
+      CUR_DIRECTION="egress"
+      if fn_exists egress && egress; then
+        sqm_log "sqm_start: egress shaping activated"
+      else
+        sqm_warn "sqm_start: ${SCRIPT} lacks egress() function or exited with an error"
+      fi
+    else
+      SILENT=1 "$TC" qdisc del dev "${IFACE}" root
+      sqm_log "sqm_start: egress shaping deactivated"
+    fi
+
+    if [ "${DOWNLINK}" -ne 0 ]; then
+      CUR_DIRECTION="ingress"
+      if fn_exists ingress && ingress; then
+        sqm_log "sqm_start: ingress shaping activated"
+      else
+        sqm_warn "sqm_start: ${SCRIPT} lacks ingress() function or exited with an error"
+      fi
+    else
+      SILENT=1 "$TC" qdisc del dev "${DEV}" root
+      sqm_log "sqm_start: ingress shaping deactivated"
+    fi
+
+    return 0
+}
+
+# Replaces the stock sqm_stop: nssifb is only deleted where that is safe (not on
+# kernel 5.10, see DELETENSSIFB).
+sqm_stop() {
+    # egress shaper: independent of the download setting (silent, there is
+    # nothing to delete if upload shaping was off)
+    SILENT=1 "$TC" qdisc del dev "$IFACE" root
+
+    if [ "${DOWNLINK}" -ne 0 ] && [ -n "$CUR_IFB" ]; then
+       "$TC" qdisc del dev "$CUR_IFB" root
+       sqm_debug "${0}: ${CUR_IFB} shaper deleted"
+    fi
+
+    nft delete table inet qos_custom 2>/dev/null
+
+    if [ -n "$DELETENSSIFB" ]; then
+        [ -n "$CUR_IFB" ] && "$IP" link set dev "${CUR_IFB}" down
+        [ -n "$CUR_IFB" ] && "$IP" link delete "${CUR_IFB}" type nss_ifb
+        [ -n "$CUR_IFB" ] && sqm_debug "${0}: ${CUR_IFB} interface deleted"
+    else
+        # workaround for a bug in nssifb on kernel 5.10
+        sqm_debug "${0}: Not deleting $CUR_IFB because variable DELETENSSIFB is not set"
+    fi
+
+    return 0
+}
+
+# vim: syntax=sh ts=4 sw=4 sts=4

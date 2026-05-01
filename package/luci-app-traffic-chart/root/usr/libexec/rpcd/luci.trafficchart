@@ -1,0 +1,144 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# luci.trafficchart - rpcd plugin: serves what the trafficchart-agg daemon wrote.
+#
+# The daemon (procd service "trafficchart") walks /proc/net/nf_conntrack and reads the qdisc
+# counters; it writes everything the page needs to /var/run/trafficchart/classes.json (live data)
+# and history*.json (history). This script only hands those files to the page, so its cost is
+# independent of how many browser tabs are open. It computes nothing itself.
+OUT_DIR="${TC_OUT_DIR:-/var/run/trafficchart}"
+AGG_FILE="$OUT_DIR/classes.json"
+AGG_MAX_AGE=10          # seconds; at least two daemon intervals + 5 s are always allowed
+HIST_MAX_BYTES=800000   # never more than this many bytes (rpcd/ubus reply limit is 1 MB)
+HIST_MAX=800            # never return more buckets than this (744 hourly buckets = 31 days)
+
+
+case "$1" in
+    list)
+        # "history" is an optional parameter of get_stats (rather than a second
+        # method) so no rpcd ACL change is needed for it. "tier" (5m | 1h | 1d)
+        # selects the resolution, "n" limits the answer to the newest n buckets,
+        # "dim" (a | d | h) returns only that dimension per bucket.
+        echo '{"get_stats": {"history": 1, "tier": "5m", "n": 1, "dim": "a"}, "restart": {}, "reset_history": {}}'
+        ;;
+    call)
+        # rpcd exec protocol passes the method name as $2; "restart" and
+        # "reset_history" both need the write ACL (luci-app-traffic-chart-admin),
+        # get_stats only needs read.
+        if [ "$2" = "restart" ]; then
+            # detached: the init script stopping this very rpcd child must not
+            # block the ubus reply
+            ( /etc/init.d/trafficchart restart >/dev/null 2>&1 & )
+            echo '{"result": "restarting"}'
+            exit 0
+        fi
+
+        if [ "$2" = "reset_history" ]; then
+            # Distinct from "restart": this only asks the RUNNING daemon to
+            # clear its cumulative application/device/destination totals and
+            # its in-RAM history (all three tiers), then keep going - no procd
+            # bounce, no re-attaching of persistence targets, live flow
+            # tracking (and therefore the "top flows" list) is unaffected.
+            # trafficchart-agg polls for this file once per loop iteration
+            # (same mechanism as its stop.req) and removes it once handled.
+            # Buckets already written to a persistent storage path are left
+            # alone (only the RAM/UI view is cleared) - delete those files
+            # yourself if you also want the on-disk archive gone.
+            umask 077
+            if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
+                echo '{"error":"cannot create runtime directory"}'
+                exit 1
+            fi
+            if ! chmod 700 "$OUT_DIR" 2>/dev/null; then
+                echo '{"error":"cannot set runtime directory permissions"}'
+                exit 1
+            fi
+            if ! : > "${OUT_DIR}/reset.req" 2>/dev/null; then
+                echo '{"error":"cannot create reset request"}'
+                exit 1
+            fi
+            echo '{"result": "reset requested"}'
+            exit 0
+        fi
+
+        # optional parameters arrive as JSON on stdin (rpcd exec plugin)
+        PARAMS=""
+        [ -t 0 ] || PARAMS=$(cat 2>/dev/null)
+        case "$PARAMS" in
+            *'"history"'*)
+                # get_stats {"history":1,"tier":"1h","n":200} -> newest n buckets of that tier
+                TIER=$(echo "$PARAMS" | sed -n 's/.*"tier" *: *"\([a-z0-9]*\)".*/\1/p')
+                HN=$(echo "$PARAMS" | sed -n 's/.*"n" *: *\([0-9][0-9]*\).*/\1/p')
+                # "dim" = only that dimension per bucket (keeps long ranges under the ubus limit)
+                DIM=$(echo "$PARAMS" | sed -n 's/.*"dim" *: *"\([adh]\)".*/\1/p')
+                case "$TIER" in
+                    1h) HIST_FILE="$OUT_DIR/history_1h.json" ;;
+                    1d) HIST_FILE="$OUT_DIR/history_1d.json" ;;
+                    *)  HIST_FILE="$OUT_DIR/history.json"; TIER=5m ;;
+                esac
+                case "$HN" in ''|*[!0-9]*|0) HN=$HIST_MAX ;; esac
+                [ "$HN" -gt "$HIST_MAX" ] && HN=$HIST_MAX
+                if [ -r "$HIST_FILE" ]; then
+                    # file = JSON array, one bucket per line; keep the newest HN
+                    awk -v N="$HN" -v TIER="$TIER" -v MAXB="$HIST_MAX_BYTES" -v DIM="$DIM" '
+                        # bucket layout: {"t":..,"dt":..,"in":..,"out":..,"a":{..},"d":{..},"h":{..},"sh":{..}}
+                        # cut by position of the section keys (quotes in names are sanitized, so
+                        # these markers cannot occur inside a name)
+                        /^\{/ {
+                            sub(/,$/, "")
+                            if (DIM != "") {
+                                pa = index($0, ",\"a\":{"); pd = index($0, ",\"d\":{")
+                                ph = index($0, ",\"h\":{"); ps = index($0, ",\"sh\":")
+                                if (pa > 0 && pd > pa && ph > pd && ps > ph) {
+                                    keep = (DIM == "a") ? substr($0, pa, pd - pa) : (DIM == "d") ? substr($0, pd, ph - pd) : substr($0, ph, ps - ph)
+                                    $0 = substr($0, 1, pa - 1) keep substr($0, ps)
+                                }
+                            }
+                            b[++c] = $0
+                        }
+                        END {
+                            s = c - N + 1; if (s < 1) s = 1
+                            tot = 0
+                            for (i = c; i >= s; i--) { tot += length(b[i]) + 1; if (tot > MAXB) { s = i + 1; break } }
+                            if (s > c && c > 0) s = c
+                            printf "{\"tier\":\"%s\",\"buckets\":[", TIER
+                            for (i = s; i <= c; i++) printf "%s%s", (i > s ? "," : ""), b[i]
+                            print "]}"
+                        }' "$HIST_FILE"
+                else
+                    echo '{"buckets":[]}'
+                fi
+                exit 0
+                ;;
+        esac
+
+        # --- live data: serve classes.json if the daemon wrote it recently ---
+        if [ ! -r "$AGG_FILE" ]; then
+            echo '{"error": "aggregator not running - /etc/init.d/trafficchart start"}'
+            exit 0
+        fi
+        AGG_JSON=$(cat "$AGG_FILE" 2>/dev/null)
+        if [ -z "$AGG_JSON" ]; then
+            echo '{"error": "aggregator file empty"}'
+            exit 0
+        fi
+        # freshness from the daemon's own uptime stamp ("up") against /proc/uptime, without forking
+        K_UP='"up":'; K_LOAD='"load":{'; K_IV='"interval":'
+        fp_t="${AGG_JSON#*"$K_UP"}"; fp_t="${fp_t%%,*}"; fp_t="${fp_t%.*}"
+        fp_iv="${AGG_JSON#*"$K_LOAD"}"; fp_iv="${fp_iv#*"$K_IV"}"; fp_iv="${fp_iv%%,*}"
+        case "$fp_iv" in ''|*[!0-9]*) fp_iv=0 ;; esac
+        fp_lim=$((2 * fp_iv + 5))
+        [ "$AGG_MAX_AGE" -ge "$fp_lim" ] && fp_lim="$AGG_MAX_AGE"
+        fp_up=""; read fp_up _ 2>/dev/null < /proc/uptime; fp_up="${fp_up%.*}"
+        case "$fp_t$fp_up" in
+            ''|*[!0-9]*)
+                echo '{"error": "aggregator data unreadable - /etc/init.d/trafficchart restart"}' ;;
+            *)
+                if [ "$fp_up" -ge "$fp_t" ] && [ $((fp_up - fp_t)) -le "$fp_lim" ]; then
+                    printf '%s\n' "$AGG_JSON"
+                else
+                    echo '{"error": "aggregator data stale - /etc/init.d/trafficchart restart"}'
+                fi ;;
+        esac
+        ;;
+esac
