@@ -1,0 +1,78 @@
+#!/bin/sh
+
+# NPU Jitter Daemon
+# Continuously pings a target and writes jitter stats to /tmp/npu-jitter.json
+# Started by /etc/init.d/npu-jitter at boot
+
+TARGET="${1:-1.1.1.1}"
+RESULT_FILE="/tmp/npu-jitter.json"
+WINDOW=10
+INTERVAL=2  # seconds between pings
+
+ping_values=""
+count=0
+cpu_prev=""
+
+while true; do
+	# System CPU % over the loop window (delta vs the previous iteration).
+	# Sampled here in the background daemon (steady ~2s window, and the daemon
+	# itself is lightweight) rather than in the RPC on every page poll, so it
+	# reflects real background load instead of FlowSense's own polling burst -
+	# the old in-RPC /proc/stat delta measured its own overhead and read
+	# ~15-20% at idle vs ~0% in top.
+	cpu_now=$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8; exit}' /proc/stat 2>/dev/null)
+	cpu_pct=0
+	if [ -n "$cpu_prev" ] && [ -n "$cpu_now" ]; then
+		cpu_pct=$(awk -v a="$cpu_prev" -v b="$cpu_now" 'BEGIN {
+			split(a, p, " "); split(b, c, " ")
+			pt = p[1]+p[2]+p[3]+p[4]+p[5]+p[6]+p[7]
+			ct = c[1]+c[2]+c[3]+c[4]+c[5]+c[6]+c[7]
+			dt = ct - pt; di = c[4] - p[4]
+			if (dt > 0) printf "%d", int((dt - di) * 100 / dt)
+			else print 0
+		}')
+	fi
+	cpu_prev="$cpu_now"
+
+	# Single ping, 1 second timeout.
+	# NB: on busybox ping the summary splits by '/' so $5 is the MAX rtt -
+	# identical to avg only because -c 1 sends a single probe. If the probe
+	# count ever changes, this field must be revisited.
+	rtt=$(ping -c 1 -W 1 "$TARGET" 2>/dev/null | awk -F'/' '/min.*avg/{printf "%.2f", $5}')
+
+	if [ -n "$rtt" ]; then
+		ping_values="$ping_values $rtt"
+		count=$((count + 1))
+
+		# Trim to window size
+		if [ "$count" -gt "$WINDOW" ]; then
+			ping_values=$(echo "$ping_values" | awk '{
+				for (i = NF - '"$WINDOW"' + 1; i <= NF; i++) printf $i " "
+			}')
+			count=$WINDOW
+		fi
+
+		# Calculate mean absolute deviation (jitter) and last ping
+		result=$(echo "$ping_values" | awk -v c="$count" -v cpu="$cpu_pct" '{
+			n = NF
+			sum = 0
+			for (i = 1; i <= n; i++) sum += $i
+			avg = sum / n
+			dev = 0
+			for (i = 1; i <= n; i++) dev += ($i > avg ? $i - avg : avg - $i)
+			jitter = dev / n
+			last = $n
+			printf "{\"jitter\":%.2f,\"last_ping\":%.2f,\"samples\":%d,\"target\":\"%s\",\"reachable\":true,\"available\":true,\"cpu_pct\":%d}", \
+				jitter, last, c, "'"$TARGET"'", cpu
+		}')
+
+		# Write atomically so a reader never sees a half-written file
+		echo "$result" > "$RESULT_FILE.tmp" && mv "$RESULT_FILE.tmp" "$RESULT_FILE"
+	else
+		# Unreachable — preserve sample count but mark unreachable
+		printf '{"jitter":0,"last_ping":0,"samples":%d,"target":"%s","reachable":false,"available":true,"cpu_pct":%d}\n' \
+			"$count" "$TARGET" "$cpu_pct" > "$RESULT_FILE.tmp" && mv "$RESULT_FILE.tmp" "$RESULT_FILE"
+	fi
+
+	sleep "$INTERVAL"
+done
