@@ -1,0 +1,7 @@
+config jitter 'jitter'
+	option target '1.1.1.1'
+
+config settings 'settings'
+	# Airtime→goodput efficiency (%) for the offloaded-throughput needle estimate.
+	# throughput ≈ airtime × bitrate × air_eff/100. Calibrated to iperf (~80).
+	option air_eff '80'
