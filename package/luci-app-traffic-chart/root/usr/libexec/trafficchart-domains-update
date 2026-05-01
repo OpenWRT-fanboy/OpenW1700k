@@ -1,0 +1,447 @@
+#!/bin/sh
+# trafficchart-domains-update - fetch and compile the current v2fly domain-list-community
+# release into the small runtime lookup file used by trafficchart-dns.
+#
+# Runtime files: /etc/trafficchart-domains and /etc/trafficchart-domain-groups.
+# Source: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat_plain.yml
+# The published plain YAML is already expanded/deduplicated by v2fly's build process.
+# Runtime rows use internal rule prefixes: exact (=), keyword (~), and regex (r:).
+
+set -eu
+
+OUT=/etc/trafficchart-domains
+GROUPS_OUT=/etc/trafficchart-domain-groups
+STATE=/etc/trafficchart-domains.state
+LOCK=/var/run/trafficchart-domains.update.lock
+TMPDIR=""
+YML=""
+SUM=""
+NEW=""
+GROUPS_NEW=""
+BASE='https://github.com/v2fly/domain-list-community/releases/latest/download'
+
+# Bound day counts before multiplying by 86400 below. LuCI also enforces this
+# range; keep direct UCI/CLI calls safe on 32-bit OpenWrt shell arithmetic too.
+bound_days() {
+    local value
+    value="${1:-}"
+    case "$value" in ''|*[!0-9]*) echo 7; return ;; esac
+    value=$(printf '%s' "$value" | sed 's/^0*//')
+    [ -n "$value" ] || { echo 7; return; }
+    [ "$value" != 0 ] || { echo 7; return; }
+    if [ "${#value}" -gt 4 ]; then echo 7; return; fi
+    if [ "${#value}" -eq 4 ] && [ "$value" -gt 3650 ]; then echo 7; return; fi
+    echo "$value"
+}
+
+# The service manager keeps this lightweight watcher alive while DNS names and
+# automatic updates are enabled. Checking every six hours makes the configured
+# interval apply during a long router uptime, not only at boot/service restart.
+# The child updater still owns the lock, due check, checksum validation and
+# atomic publish; the watcher never touches the live database itself.
+if [ "${1:-}" = "--watch" ]; then
+    WATCH_DAYS=$(bound_days "${2:-7}")
+    WATCH_INTERVAL="${TC_DOMAINS_CHECK_INTERVAL:-21600}"
+    case "$WATCH_INTERVAL" in ''|*[!0-9]*|0) WATCH_INTERVAL=21600 ;; esac
+    watch_child=""
+    watch_cleanup() {
+        trap - INT TERM HUP
+        if [ -n "$watch_child" ]; then
+            kill "$watch_child" 2>/dev/null || true
+            wait "$watch_child" 2>/dev/null || true
+        fi
+        exit 0
+    }
+    trap watch_cleanup INT TERM HUP
+    while :; do
+        "$0" --if-due "$WATCH_DAYS" &
+        watch_child=$!
+        wait "$watch_child" || true
+        watch_child=""
+        sleep "$WATCH_INTERVAL" &
+        watch_child=$!
+        wait "$watch_child" || true
+        watch_child=""
+    done
+fi
+
+now_epoch=$(date +%s)
+now_text=$(date '+%Y-%m-%d %H:%M:%S')
+write_state() {
+    status="$1"; message="$2"; current="$3"; previous="$4"; changed="$5"; success_epoch="${6:-0}"
+    tmp_state="${STATE}.tmp.$$"
+    {
+        printf 'status=%s\n' "$status"
+        printf 'message=%s\n' "$message"
+        printf 'last_attempt=%s\n' "$now_epoch"
+        printf 'last_attempt_text=%s\n' "$now_text"
+        printf 'last_success=%s\n' "$success_epoch"
+        if [ "$success_epoch" -gt 0 ]; then printf 'last_success_text=%s\n' "$(date -d "@$success_epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')"; else printf 'last_success_text=\n'; fi
+        printf 'previous_rules=%s\n' "$previous"
+        printf 'rules=%s\n' "$current"
+        printf 'changed=%s\n' "$changed"
+        printf 'format=4\n'
+        printf 'source=%s\n' "$BASE/dlc.dat_plain.yml"
+    } > "$tmp_state"
+    chmod 0644 "$tmp_state"
+    mv -f "$tmp_state" "$STATE"
+}
+
+# kill -0 alone is not enough to establish lock ownership: after a crash, the
+# old PID may have been reused by an unrelated long-lived process. Verify the
+# command line where /proc exposes it. Return 0 = live updater, 1 = stale/not
+# this updater, 2 = cannot safely verify (fail closed to avoid parallel updates).
+lock_owner_state() {
+    lock_check_pid=$1
+    kill -0 "$lock_check_pid" 2>/dev/null || return 1
+    [ -r "/proc/$lock_check_pid/cmdline" ] || return 2
+    lock_check_cmd=$(tr '\000' ' ' < "/proc/$lock_check_pid/cmdline" 2>/dev/null) || return 2
+    [ -n "$lock_check_cmd" ] || return 2
+    printf '%s\n' "$lock_check_cmd" | grep -Eq '(^|[[:space:]/])trafficchart-domains-update([[:space:]]|$)'
+    lock_check_match=$?
+    case "$lock_check_match" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Kernel-managed advisory locking serializes both ordinary starts and stale-PID
+# recovery. The previous rename-based repair had a race: contender B could inspect
+# an old PID, pause, then rename contender A's newly-created live lock and acquire
+# the path itself. Keep the lock file inode stable and let flock release on exit/SIGKILL.
+lock_busy() {
+    echo 'domain list update already running' >&2
+    exit 1
+}
+
+old_count=0
+[ -r "$OUT" ] && old_count=$(wc -l < "$OUT" 2>/dev/null || echo 0)
+old_format=""
+[ -r "$STATE" ] && old_format=$(sed -n 's/^format=//p' "$STATE" | head -n1)
+# Keep the actual old and new row counts visible. The conversion from the
+# expanded source list to the compact lookup table is an intentional change.
+previous_count=$old_count
+last_success=0
+[ -r "$STATE" ] && last_success=$(sed -n 's/^last_success=//p' "$STATE" | head -n1)
+case "$last_success" in ''|*[!0-9]*) last_success=0 ;; esac
+fail() {
+    rc="$1"; msg="$2"
+    write_state FAILED "$msg" "$old_count" "$previous_count" no "$last_success"
+    logger -t trafficchart "v2fly domain list update failed: $msg"
+    exit "$rc"
+}
+
+
+if ! command -v flock >/dev/null 2>&1; then
+    # A legacy PID-only updater may still own the persistent marker during an
+    # upgrade. Do not overwrite its RUNNING status with a preflight failure.
+    if [ -r "$LOCK" ]; then
+        lock_owner=$(cat "$LOCK" 2>/dev/null || true)
+        case "$lock_owner" in
+            ''|*[!0-9]*) ;;
+            *)
+                if lock_owner_state "$lock_owner"; then
+                    lock_busy
+                else
+                    lock_state=$?
+                    [ "$lock_state" -eq 2 ] && lock_busy
+                fi
+                ;;
+        esac
+    fi
+    fail 1 'safe domain update locking requires the OpenWrt BusyBox flock applet'
+fi
+
+# For a first install, create the owner marker atomically before opening the lock.
+# This also lets an older PID-only updater see a live owner while it is being replaced.
+if [ ! -e "$LOCK" ]; then
+    ( set -C; printf '%s\n' "$$" > "$LOCK" ) 2>/dev/null || true
+fi
+# Probe append-open in a subshell: POSIX shells can terminate immediately on
+# a failed redirection to a special builtin, before an `|| fail` handler runs.
+if ! ( : >> "$LOCK" ) 2>/dev/null; then
+    fail 1 'cannot open domain update lock'
+fi
+# The persistent lock inode is never unlinked by this updater, so the successful
+# probe and this descriptor open cannot be raced by our own cleanup path.
+exec 9>>"$LOCK"
+flock -n 9 || lock_busy
+
+# Honor PID-only markers left by prior releases during upgrades. A live previous
+# updater still blocks this version even though it does not understand flock.
+lock_owner=$(cat "$LOCK" 2>/dev/null || true)
+case "$lock_owner" in
+    "$$")
+        ;;
+    ''|*[!0-9]*)
+        # Empty/malformed markers from older versions are only stale after a grace
+        # period. A stable flock inode means this check itself is race-free for new versions.
+        lock_mtime=$(stat -c %Y "$LOCK" 2>/dev/null || echo 0)
+        case "$lock_mtime" in ''|*[!0-9]*) lock_mtime=0 ;; esac
+        [ "$lock_mtime" -gt 0 ] && [ "$now_epoch" -ge "$lock_mtime" ] &&
+            [ $((now_epoch - lock_mtime)) -ge 900 ] || lock_busy
+        ;;
+    0|1)
+        lock_busy
+        ;;
+    *)
+        if lock_owner_state "$lock_owner"; then
+            lock_busy
+        else
+            lock_state=$?
+            # If /proc is unavailable or unreadable, fail closed instead of risking
+            # parallel updates. A readable unrelated command line is stale.
+            [ "$lock_state" -eq 2 ] && lock_busy
+        fi
+        ;;
+esac
+# Truncate/write the marker through the path but never rename or unlink this inode.
+printf '%s\n' "$$" > "$LOCK" || lock_busy
+
+
+IF_DUE=0
+DUE_DAYS=7
+if [ "${1:-}" = "--if-due" ]; then
+    IF_DUE=1
+    DUE_DAYS="${2:-7}"
+fi
+DUE_DAYS=$(bound_days "$DUE_DAYS")
+# format=4: app labels plus retained v2fly category/keyword/full/regexp-rule memberships.
+if [ "$IF_DUE" = "1" ] && [ -r "$STATE" ] && grep -q '^format=4$' "$STATE" 2>/dev/null; then
+    last_success=$(sed -n 's/^last_success=//p' "$STATE" | head -n1)
+    case "$last_success" in ''|*[!0-9]*) last_success=0 ;; esac
+    now=$(date +%s)
+    age=$((now - last_success))
+    # A clock rollback (common before NTP sync after reboot) makes age negative.
+    # Negative age is not evidence of a recent success: allow the refresh rather
+    # than suppressing automatic updates until wall time catches up.
+    [ "$last_success" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -lt $((DUE_DAYS * 86400)) ] && exit 0
+fi
+
+# Do not allocate a workspace for a not-due automatic refresh. The state writer
+# and fail() are already available, so a full/unwritable /tmp is reported as a
+# real update failure instead of leaving a stale previous OK status behind.
+TMPDIR=$(mktemp -d /tmp/trafficchart-domains.XXXXXX) || fail 1 'cannot create temporary working directory'
+YML="$TMPDIR/dlc.dat_plain.yml"
+SUM="$TMPDIR/dlc.dat_plain.yml.sha256sum"
+NEW="$TMPDIR/domains.new"
+GROUPS_NEW="$TMPDIR/groups.new"
+cleanup() {
+    rc=$?
+    trap - EXIT INT TERM HUP
+    rm -rf "$TMPDIR"
+    # LOCK is deliberately persistent: unlinking a file while another process
+    # has it flocked would let a later process lock a different inode at the same path.
+    # The PID marker is overwritten by the next lock holder; flock is released when FD 9 closes.
+    exit "$rc"
+}
+trap 'exit 143' INT TERM HUP
+trap cleanup EXIT
+
+# Only mark RUNNING after the due check. A skipped automatic refresh must not
+# overwrite the last successful status with a permanent RUNNING state.
+echo "[$now_text] Starting v2fly service database update (previous format=${old_format:-unknown}, entries=$old_count)."
+write_state RUNNING "update in progress" "$old_count" "$previous_count" no "$last_success"
+
+# Apply a hard wall-clock cap when the optional BusyBox/GNU timeout applet
+# exists. Native downloader timeouts remain enabled as a fallback on minimal
+# OpenWrt builds that omit timeout.
+run_fetch() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 150 "$@"
+    else
+        "$@"
+    fi
+}
+
+fetch() {
+    url="$1"; dst="$2"
+    err="$TMPDIR/fetch.err"
+    : > "$err"
+    : > "$TMPDIR/fetch.detail"
+    # Try every available downloader. On older OpenWrt builds uclient-fetch
+    # can exist but fail on redirects/TLS while wget or curl works.
+    if command -v uclient-fetch >/dev/null 2>&1; then
+        if run_fetch uclient-fetch -T 120 -O "$dst" "$url" 2>"$err"; then return 0; fi
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        if run_fetch wget -T 120 -t 2 -O "$dst" "$url" 2>"$err"; then return 0; fi
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        if run_fetch curl -fsSL --connect-timeout 15 --max-time 120 -o "$dst" "$url" 2>"$err"; then return 0; fi
+    fi
+    detail=$(tr '\n' ' ' < "$err" 2>/dev/null | sed 's/[[:space:]][[:space:]]*/ /g' | cut -c1-220)
+    [ -n "$detail" ] || detail='no HTTP downloader available or download failed'
+    echo "$detail" > "$TMPDIR/fetch.detail"
+    echo "$detail" >&2
+    return 1
+}
+
+fetch "$BASE/dlc.dat_plain.yml" "$YML" || { detail=$(cat "$TMPDIR/fetch.detail" 2>/dev/null || true); fail 1 "download failed: dlc.dat_plain.yml${detail:+ - $detail}"; }
+fetch "$BASE/dlc.dat_plain.yml.sha256sum" "$SUM" || { detail=$(cat "$TMPDIR/fetch.detail" 2>/dev/null || true); fail 1 "download failed: checksum${detail:+ - $detail}"; }
+
+# Verify the official release checksum before replacing the live list.
+if command -v sha256sum >/dev/null 2>&1; then
+    expected=$(sed -n '1{s/[[:space:]].*$//;p;}' "$SUM")
+    actual=$(sha256sum "$YML" | awk '{print $1}')
+    [ -n "$expected" ] && [ "$expected" = "$actual" ] || fail 1 'v2fly checksum verification failed'
+else
+    fail 1 'sha256sum is required for a safe update'
+fi
+
+# Keep application labels and category membership separately.  Each row is:
+# domain<TAB>best application label<TAB>comma-separated v2fly categories.
+# Category lists are NOT discarded: category-porn, category-ads-all, etc. remain
+# available to the runtime warning matcher while ordinary app labels stay intact.
+awk '
+function unquote(v,   i,c,n,o) {
+    sub(/^[[:space:]]*/, "", v); sub(/[[:space:]]*$/, "", v)
+    if (v ~ /^".*"$/) {
+        v=substr(v,2,length(v)-2); o=""
+        # datdump uses Go %q for YAML strings. Decode the escapes that can occur
+        # in exported rule text before it reaches the runtime matcher. In particular
+        # \\ becomes \, so regexp:^foo\\.example$ becomes regexp:^foo\.example$.
+        for(i=1;i<=length(v);i++) {
+            c=substr(v,i,1)
+            if(c=="\\" && i<length(v)) {
+                n=substr(v,i+1,1)
+                if(n=="\\" || n=="\"") { o=o n; i++; continue }
+                if(n=="n") { o=o "\n"; i++; continue }
+                if(n=="r") { o=o "\r"; i++; continue }
+                if(n=="t") { o=o "\t"; i++; continue }
+            }
+            o=o c
+        }
+        return o
+    } else if (v ~ /^\047.*\047$/) {
+        sub(/^\047/, "", v); sub(/\047$/, "", v)
+    }
+    return v
+}
+function valid(v) { return v ~ /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/ }
+function pretty(n,   p,k,i,o,w) {
+    k=split(n,p,"-"); o=""
+    for(i=1;i<=k;i++){w=p[i];o=o (i>1?" ":"") toupper(substr(w,1,1)) substr(w,2)}
+    return o
+}
+# V2Fly/Go regexes are RE2 regular expressions, while the runtime matcher uses
+# the POSIX ERE implementation shipped with BusyBox/mawk. Normalize the common
+# Go/RE2 shorthand classes that POSIX ERE does not define consistently. Other
+# backslash escapes (for example \. or \-) are retained verbatim.
+function normalize_re(v,   i,c,n,o) {
+    o=""
+    for(i=1;i<=length(v);i++) {
+        c=substr(v,i,1)
+        if(c=="\\" && i<length(v)) {
+            n=substr(v,i+1,1)
+            if(n=="d") { o=o "[0-9]"; i++; continue }
+            if(n=="D") { o=o "[^0-9]"; i++; continue }
+            if(n=="w") { o=o "[A-Za-z0-9_]"; i++; continue }
+            if(n=="W") { o=o "[^A-Za-z0-9_]"; i++; continue }
+            if(n=="s") { o=o "[[:space:]]"; i++; continue }
+            if(n=="S") { o=o "[^[:space:]]"; i++; continue }
+        }
+        o=o c
+    }
+    return o
+}
+/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/ {
+    app=$0; sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/,"",app); app=unquote(app)
+    iscat=(app ~ /^category-/); len=999999; next
+}
+/^[[:space:]]+length:[[:space:]]*[0-9]+/ { len=$2+0; next }
+/^[[:space:]]*-[[:space:]]+["\047]?(domain:|full:|keyword:|regexp:)/ {
+    v=$0; sub(/^[[:space:]]*-[[:space:]]+/, "", v); v=unquote(v)
+    typ=v; sub(/:.*/,"",typ); sub(/^[^:]*:/,"",v)
+    # The plain release keeps rule attributes (for example @ads) after the
+    # domain value. They are metadata, not part of the hostname.
+    sub(/[[:space:]].*$/, "", v)
+    if (typ=="regexp") {
+        # Preserve v2fly regexp rules separately. They are Go/RE2 regular
+        # expressions, which are compatible with the ERE subset used by the
+        # BusyBox/mawk runtime matcher for the expressions shipped by DLC.
+        # Regex rules are most important for category warnings; keeping them
+        # in the group map avoids guessing an application label for overlapping
+        # regular expressions.
+        v=normalize_re(v)
+        if (v!="" && iscat) {
+            k="r:" v
+            if (!(k SUBSEP app in cats)) { cats[k,app]=1; catlist[k]=catlist[k] (catlist[k]==""?"":",") app }
+        }
+        next
+    }
+    v=tolower(v)
+    if (!valid(v)) next
+    if (typ=="full") v="=" v
+    else if (typ=="keyword") v="~" v
+    if (v=="" || app=="") next
+    if (iscat) {
+        if (!(v SUBSEP app in cats)) { cats[v,app]=1; catlist[v]=catlist[v] (catlist[v]==""?"":",") app }
+    } else if (!(v in bestlen) || len < bestlen[v]) { bestlen[v]=len; bestapp[v]=pretty(app) }
+    next
+}
+END {
+    for(v in bestapp) print v "\t" bestapp[v] "\t" catlist[v]
+    # Category-only domains must still be emitted so category alerts work even
+    # where no application list has a corresponding entry.
+    for(v in catlist) if (!(v in bestapp)) print v "\t\t" catlist[v]
+}
+' "$YML" | sort -t "$(printf '\t')" -k1,1 > "$NEW"
+
+# Publish the actual category groups present in this downloaded v2fly release.
+# The LuCI selector reads this list, so users never need to guess group names.
+awk '
+/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/ {
+    v=$0; sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", v)
+    sub(/^[[:space:]]*["\047]?/, "", v); sub(/["\047]?[[:space:]]*$/, "", v)
+    if (v ~ /^category-[a-z0-9][a-z0-9-]*$/) print v
+}
+' "$YML" | sort -u > "$GROUPS_NEW"
+[ -s "$GROUPS_NEW" ] || fail 1 'no category groups found in v2fly list'
+
+count=$(wc -l < "$NEW")
+# Refuse to replace a good list with an unexpectedly empty/broken parse.
+[ "$count" -ge 100 ] || fail 1 "parser produced only $count rules; refusing replacement"
+
+chmod 0644 "$NEW"
+mkdir -p /etc
+changed=yes
+if [ "$old_count" -eq "$count" ] && cmp -s "$OUT" "$NEW" 2>/dev/null && cmp -s "$GROUPS_OUT" "$GROUPS_NEW" 2>/dev/null; then changed=no; fi
+
+# The two published files form one logical database: trafficchart-dns reads both
+# after its restart. Save the previous pair before publishing so a failure in the
+# second rename cannot leave new app rules paired with old category memberships.
+HAD_OUT=0
+HAD_GROUPS=0
+if [ -e "$OUT" ]; then
+    cp -p "$OUT" "$TMPDIR/previous-domains" || fail 1 'cannot back up existing domain rules before publish'
+    HAD_OUT=1
+fi
+if [ -e "$GROUPS_OUT" ]; then
+    cp -p "$GROUPS_OUT" "$TMPDIR/previous-groups" || fail 1 'cannot back up existing category groups before publish'
+    HAD_GROUPS=1
+fi
+restore_previous_database() {
+    _restore_failed=0
+    if [ "$HAD_OUT" = 1 ]; then cp -p "$TMPDIR/previous-domains" "$OUT" || _restore_failed=1
+    else rm -f "$OUT" || _restore_failed=1; fi
+    if [ "$HAD_GROUPS" = 1 ]; then cp -p "$TMPDIR/previous-groups" "$GROUPS_OUT" || _restore_failed=1
+    else rm -f "$GROUPS_OUT" || _restore_failed=1; fi
+    return "$_restore_failed"
+}
+
+if ! mv -f "$NEW" "$OUT"; then
+    restore_previous_database || fail 1 'domain rule publish failed and rollback was incomplete; verify domain database files'
+    fail 1 'domain rule publish failed; previous database retained'
+fi
+if ! chmod 0644 "$GROUPS_NEW" || ! mv -f "$GROUPS_NEW" "$GROUPS_OUT"; then
+    restore_previous_database || fail 1 'category-group publish failed and rollback was incomplete; verify domain database files'
+    fail 1 'category-group publish failed; previous database restored'
+fi
+success_epoch=$(date +%s)
+write_state OK "update successful" "$count" "$previous_count" "$changed" "$success_epoch"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Update successful: $count entries (comparable previous count: ${previous_count:-0}; changed=$changed)."
+logger -t trafficchart "v2fly domain list updated: $count rules (previous comparable $previous_count, changed $changed)"
+# Reload only the DNS observer; do not restart trafficchart-agg and therefore do not reset totals.
+for pid in $(pidof trafficchart-dns 2>/dev/null || true); do kill "$pid" 2>/dev/null || true; done

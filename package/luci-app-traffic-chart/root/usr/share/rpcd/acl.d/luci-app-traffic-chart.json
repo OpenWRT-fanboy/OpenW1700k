@@ -1,0 +1,52 @@
+{
+  "luci-app-traffic-chart": {
+    "description": "Read access to Traffic Chart rpcd and settings",
+    "read": {
+      "ubus": {
+        "luci.trafficchart": [
+          "get_stats",
+          "get_domain_status",
+          "get_domain_groups"
+        ]
+      },
+      "uci": [
+        "trafficchart"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "luci.trafficchart": []
+      }
+    }
+  },
+  "luci-app-traffic-chart-admin": {
+    "description": "Administrative access to Traffic Chart settings and actions",
+    "read": {
+      "ubus": {
+        "luci.trafficchart": [
+          "get_stats",
+          "get_domain_status",
+          "get_domain_groups",
+          "restart",
+          "reset_history",
+          "update_domains"
+        ]
+      },
+      "uci": [
+        "trafficchart"
+      ]
+    },
+    "write": {
+      "ubus": {
+        "luci.trafficchart": [
+          "restart",
+          "reset_history",
+          "update_domains"
+        ]
+      },
+      "uci": [
+        "trafficchart"
+      ]
+    }
+  }
+}
