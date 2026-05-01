@@ -1,0 +1,32 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Fixed-operation persistence helper. Arguments are data, never shell code.
+set -f
+umask 077
+[ "$#" -eq 4 ] || exit 2
+op=$1
+a=$2
+b=$3
+c=$4
+case "$op" in
+  check)
+    [ -d "$a" ] && [ -w "$a" ] || exit 1
+    # symlinks are resolved: the target must really be below a storage tree
+    rp=$(readlink -f "$a" 2>/dev/null) || exit 1
+    case "$rp" in
+      /mnt|/mnt/*|/media|/media/*|/tmp/mnt|/tmp/mnt/*) ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  read)
+    if [ ! -e "$a" ]; then : > "$b"; exit $?; fi
+    cat "$a" > "$b"
+    ;;
+  append)
+    cat "$a" >> "$b"
+    ;;
+  replace)
+    cp "$a" "${b}.tmp" && mv -f "${b}.tmp" "$b" || { rm -f "${b}.tmp"; exit 1; }
+    ;;
+  *) exit 2 ;;
+esac

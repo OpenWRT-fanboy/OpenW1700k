@@ -1,0 +1,10 @@
+config trafficchart 'global'
+	option enabled '1'
+	option apps '1'
+	option backend 'auto'
+	option attr_totals '1'
+	# nss-trafficchart.qos classifier (restart SQM after changing)
+	option bulk_bytes '314572800'
+	option reset_ct_marks '1'
+	option dns_redirect '0'
+	option ttl_fix '0'
