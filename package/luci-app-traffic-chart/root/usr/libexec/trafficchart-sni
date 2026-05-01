@@ -1,0 +1,383 @@
+#!/bin/sh
+# trafficchart-sni - learn TLS server names from outbound TCP ClientHello packets.
+#
+# Writes /var/run/trafficchart/sni.map as:
+#   client-ip<TAB>server-ip<TAB>client-port<TAB>server-port<TAB>server-name<TAB>expiry
+# Names are scoped to the exact client/server TCP tuple, including the client source port.
+# Only the unencrypted SNI extension in TLS ClientHello is read; no payload is decrypted.
+# QUIC/UDP 443, ECH, non-TLS protocols and ClientHello packets that cannot be reassembled
+# from the captured TCP segments are intentionally not claimed as supported.
+#
+# Settings: dns_iface (shared with the DNS observer; comma-separated interface list, default br-lan).
+# Test mode: ONCE=1 reads tcpdump -tt -nn -X text from stdin. OUT_DIR/AWK/TCPDUMP may be overridden.
+
+. "${TC_COMMON:-/usr/libexec/trafficchart-common}" || exit 1
+tc_cfg DNS_IFACE br-lan text
+SNI_IFACE="$DNS_IFACE"   # SNI is part of the DNS name detection: same capture interfaces
+tc_cfg INTERVAL 4 pint
+tc_cfg SNI_TTL 14400 pint
+command -v tc_mem_watch >/dev/null 2>&1 || tc_mem_watch() { wait "$1" 2>/dev/null; }
+
+# Validate comma-separated interface names before using them in a tcpdump command.
+SNI_IFACE_RAW=$(printf '%s' "${SNI_IFACE:-br-lan}" | sed 's/ *, */,/g; s/^ *//; s/ *$//')
+SNI_IFACE_INVALID=0
+[ "${#SNI_IFACE_RAW}" -le 255 ] || SNI_IFACE_INVALID=1
+case "$SNI_IFACE_RAW" in *[!A-Za-z0-9._,-]*|,*|*,|*,,*) SNI_IFACE_INVALID=1 ;; esac
+SNI_IFACE_LIST=""
+if [ "$SNI_IFACE_INVALID" -eq 0 ]; then
+    for iface in $(printf '%s' "$SNI_IFACE_RAW" | tr ',' ' '); do
+        case "$iface" in ''|*[!A-Za-z0-9._-]*) SNI_IFACE_INVALID=1; break ;; esac
+        [ "${#iface}" -le 15 ] || { SNI_IFACE_INVALID=1; break; }
+        case " $SNI_IFACE_LIST " in *" $iface "*) ;; *) SNI_IFACE_LIST="${SNI_IFACE_LIST}${SNI_IFACE_LIST:+ }$iface" ;; esac
+    done
+fi
+if [ "$SNI_IFACE_INVALID" -ne 0 ] || [ -z "$SNI_IFACE_LIST" ]; then
+    logger -t trafficchart "invalid dns_iface (TLS SNI) '$SNI_IFACE_RAW' - using br-lan"
+    SNI_IFACE_LIST=br-lan
+fi
+SNI_IFACE_COUNT=0
+for iface in $SNI_IFACE_LIST; do SNI_IFACE_COUNT=$((SNI_IFACE_COUNT + 1)); done
+SNI_MULTI=0
+[ "$SNI_IFACE_COUNT" -gt 1 ] && SNI_MULTI=1
+SNI_IFACES=$(printf '%s' "$SNI_IFACE_LIST" | tr ' ' ',')
+SNI_CAPTURE_DEVICE=$(printf '%s' "$SNI_IFACE_LIST" | awk '{print $1}')
+[ "$SNI_MULTI" -eq 1 ] && SNI_CAPTURE_DEVICE=any
+[ "${INTERVAL:-4}" -ge 2 ] 2>/dev/null || INTERVAL=4
+[ "${SNI_TTL:-14400}" -ge 60 ] 2>/dev/null || SNI_TTL=14400
+
+OUT_DIR="${OUT_DIR:-/var/run/trafficchart}"
+# Kernel-side filter: only TCP/443 packets that can belong to a ClientHello reach tcpdump / awk.
+#  - the first segment: payload starts with a TLS handshake record (0x16 0x03)
+#  - small follow-up segments (payload 1..600 bytes): the rest of a ClientHello that did not fit into one
+#    segment (e.g. Chrome with a post-quantum key share). Plain ACKs (no payload) and bulk data never pass.
+# IPv4 offsets follow the IP and TCP header lengths, IPv6 assumes no extension headers.
+# If this tcpdump rejects an expression, the loop below falls back: handshake start only, then every tcp/443 packet.
+_H4='ip[((ip[0]&0xf)<<2)+((ip[((ip[0]&0xf)<<2)+12]&0xf0)>>2)]=0x16 and ip[((ip[0]&0xf)<<2)+((ip[((ip[0]&0xf)<<2)+12]&0xf0)>>2)+1]=0x03'
+_O4='(((ip[0]&0xf)<<2)+((ip[((ip[0]&0xf)<<2)+12]&0xf0)>>2))'
+_H6='ip6[40+((ip6[52]&0xf0)>>2)]=0x16 and ip6[41+((ip6[52]&0xf0)>>2)]=0x03'
+_O6='((ip6[52]&0xf0)>>2)'
+SNI_FILTER_FULL="tcp dst port 443 and ((ip and (($_H4) or (ip[2:2] > $_O4 and ip[2:2] <= $_O4+600))) or (ip6 and (($_H6) or (ip6[4:2] > $_O6 and ip6[4:2] <= $_O6+600))))"
+SNI_FILTER_HS='tcp dst port 443 and ((ip and ip[((ip[0]&0xf)<<2)+((ip[((ip[0]&0xf)<<2)+12]&0xf0)>>2)]=0x16 and ip[((ip[0]&0xf)<<2)+((ip[((ip[0]&0xf)<<2)+12]&0xf0)>>2)+1]=0x03) or (ip6 and ip6[40+((ip6[52]&0xf0)>>2)]=0x16 and ip6[41+((ip6[52]&0xf0)>>2)]=0x03))'
+SNI_FILTER_ALL='tcp dst port 443'
+AWK="${AWK:-$(command -v gawk 2>/dev/null || echo awk)}"
+TCPDUMP="${TCPDUMP:-tcpdump}"
+ONCE="${ONCE:-0}"
+MAP="$OUT_DIR/sni.map"
+VER="$OUT_DIR/sni.map.ver"
+
+umask 077
+mkdir -p "$OUT_DIR" || exit 1
+chmod 700 "$OUT_DIR" 2>/dev/null || exit 1
+if [ "$ONCE" != "1" ] && ! command -v "$TCPDUMP" >/dev/null 2>&1; then
+    logger -t trafficchart "tcpdump not installed - TLS SNI names disabled, everything else unaffected"
+    exit 0
+fi
+
+run_reader() {
+    "$AWK" -v MAP="$MAP" -v VER="$VER" -v TTL="$SNI_TTL" -v MULTI="$SNI_MULTI" -v IFACES="$SNI_IFACES" -v TMPID="$$" '
+    function hexval(s,   i,c,v) {
+        v=0
+        for (i=1; i<=length(s); i++) {
+            c=index("0123456789abcdef", tolower(substr(s,i,1))) - 1
+            if (c < 0) return 0
+            v=v*16+c
+        }
+        return v
+    }
+    function b(h, p) { return hexval(substr(h, p*2+1, 2)) }
+    function u16(h, p) { return b(h,p)*256+b(h,p+1) }
+    function u24(h, p) { return b(h,p)*65536+b(h,p+1)*256+b(h,p+2) }
+    function ipv4(h, p) { return b(h,p) "." b(h,p+1) "." b(h,p+2) "." b(h,p+3) }
+    function ipv6(h, p,   i,out) {
+        out=""
+        for (i=0; i<8; i++) out=out (i ? ":" : "") sprintf("%04x",u16(h,p+i*2))
+        return out
+    }
+    function valid_name(n,   i,c,label,labels) {
+        if (length(n)<1 || length(n)>253 || n !~ /^[a-z0-9.-]+$/ || n ~ /\.\./ || n ~ /^\.|\.$/) return 0
+        labels=split(n,label,".")
+        for (i=1; i<=labels; i++) {
+            if (length(label[i])<1 || length(label[i])>63 || label[i] !~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/) return 0
+        }
+        return 1
+    }
+    # Parse one complete TLS record containing a ClientHello and its SNI extension.
+    # A partial record returns empty; the caller keeps appending contiguous TCP data.
+    function parse_sni(h,   z,rec,hs,hslen,p,sid,cs,comp,exlen,end,typ,elen,q,listlen,nlen,name,i,c) {
+        found_host=""
+        z=length(h)/2
+        if (z<9 || b(h,0)!=22 || b(h,1)!=3) return ""
+        rec=u16(h,3)
+        if (rec<4 || rec+5>z) return ""
+        hs=5
+        if (b(h,hs)!=1) return ""
+        hslen=u24(h,hs+1)
+        if (hslen+4>rec || hslen<38) return ""
+        p=hs+4+2+32
+        sid=b(h,p); p+=1+sid
+        if (p+2>z) return ""
+        cs=u16(h,p); p+=2+cs
+        if (p+1>z) return ""
+        comp=b(h,p); p+=1+comp
+        if (p+2>z) return ""
+        exlen=u16(h,p); p+=2; end=p+exlen
+        if (end>hs+4+hslen || end>z) return ""
+        while (p+4<=end) {
+            typ=u16(h,p); elen=u16(h,p+2); q=p+4
+            if (q+elen>end) return ""
+            if (typ==0 && elen>=5) {
+                listlen=u16(h,q); q+=2
+                if (q+listlen>p+4+elen) return ""
+                while (q+3<=p+4+elen) {
+                    if (b(h,q)==0) {
+                        nlen=u16(h,q+1); q+=3
+                        if (nlen<1 || q+nlen>p+4+elen) return ""
+                        name=""
+                        for (i=0; i<nlen; i++) {
+                            c=b(h,q+i)
+                            if (c<33 || c>126) return ""
+                            name=name sprintf("%c",c)
+                        }
+                        name=tolower(name)
+                        if (valid_name(name)) { found_host=name; return name }
+                        return ""
+                    }
+                    nlen=u16(h,q+1); q+=3+nlen
+                }
+            }
+            p+=4+elen
+        }
+        return ""
+    }
+    function stream_drop(k) {
+        if (k in stream_next) { delete stream_next[k]; delete stream_hex[k]; delete stream_time[k]; nstream-- }
+    }
+    function clean_streams(   k) {
+        for (k in stream_time) if (now-stream_time[k]>60) stream_drop(k)
+    }
+    function stream_new(flow,payload,seq,plen,   k,victim,oldest) {
+        if (nstream>=MAXSTREAMS) {
+            victim=""; oldest=0
+            for (k in stream_time) if (oldest==0 || stream_time[k]<oldest) { oldest=stream_time[k]; victim=k }
+            if (victim!="") stream_drop(victim)
+        }
+        stream_hex[flow]=payload; stream_next[flow]=seq+plen; stream_time[flow]=now; nstream++
+    }
+    function clean_map(now,   k) {
+        for (k in mexp) if (mexp[k]<=now) { delete mexp[k]; delete mhost[k]; delete mclient[k]; delete mip[k]; delete msport[k]; delete mdport[k]; nmap-- }
+    }
+    function flush(   k,tmp) {
+        clean_map(now)
+        tmp=MAP ".tmp." TMPID
+        printf "" > tmp
+        for (k in mexp) if (mexp[k]>now)
+            printf "%s\t%s\t%d\t%d\t%s\t%.0f\n",mclient[k],mip[k],msport[k],mdport[k],mhost[k],mexp[k] > tmp
+        close(tmp)
+        if (system("mv -f " tmp " " MAP)!=0) { dirty=1; return }
+        printf "%d.%d\n",now,++version > VER
+        close(VER)
+        dirty=0; lastflush=now
+    }
+    function learn(client,server,sport,host,   key,victim,oldest,k) {
+        key=client SUBSEP server SUBSEP sport SUBSEP 443
+        if (!(key in mexp)) {
+            if (nmap>=MAXMAP) {
+                victim=""; oldest=0
+                for (k in mexp) if (oldest==0 || mexp[k]<oldest) { oldest=mexp[k]; victim=k }
+                if (victim!="") { delete mexp[victim]; delete mhost[victim]; delete mclient[victim]; delete mip[victim]; delete msport[victim]; delete mdport[victim]; nmap-- }
+            }
+            nmap++
+        }
+        if (mhost[key]!=host || mexp[key]<now+TTL-10) dirty=1
+        mclient[key]=client; mip[key]=server; msport[key]=sport; mdport[key]=443; mhost[key]=host; mexp[key]=now+TTL
+    }
+    function endpoint_ip(ep,   x) {
+        sub(/:$/, "", ep)
+        if (!match(ep,/\.[0-9]+$/)) return ""
+        x=substr(ep,RSTART+1)+0
+        ep=substr(ep,1,RSTART-1)
+        ep_port=x
+        return ep
+    }
+    function packet_header(   i,idx,src,dst,iface) {
+        idx=0
+        for (i=1;i<=NF;i++) if ($i=="IP" || $i=="IP6") { idx=i; break }
+        if (!idx) return 0
+        netidx=idx; ipver=($(idx)=="IP6" ? 6 : 4)
+        if (MULTI==1) {
+            # tcpdump -i any prints either "timestamp iface In|Out IP ..." or
+            # "timestamp iface IP ...", depending on the Linux cooked-header version.
+            if (idx>=4) iface=$(idx-2)
+            else if (idx==3) iface=$(idx-1)
+            else { drop_packet=1; return 1 }
+            drop_packet=!(iface in wanted_iface)
+        } else drop_packet=0
+        if (drop_packet) return 1
+        src=$(idx+1); dst=$(idx+3)
+        srcip=endpoint_ip(src); srcport=ep_port
+        dstip=endpoint_ip(dst); dstport=ep_port
+        if (srcip=="" || dstip=="" || dstport!=443) return 1
+        # Only outbound client -> TLS server packets; tcpdump filter also limits to TCP.
+        packet_client=srcip; packet_server=dstip
+        return 1
+    }
+    function process_packet(   n,v,iplen,proto,off,nex,extlen,loops,frag,tcp,thlen,plen,seq,flow,payload,expect,trim,host,client,server,sport,mapkey) {
+        if (drop_packet || packet_client=="" || packet_server=="" || hexdata=="") return
+        n=length(hexdata)/2
+        if (n<40) return
+        v=int(b(hexdata,0)/16)
+        if (v==4) {
+            iplen=u16(hexdata,2); proto=b(hexdata,9); off=(b(hexdata,0)%16)*4
+            frag=(b(hexdata,6)%8)*256+b(hexdata,7)
+            if (proto!=6 || frag!=0 || b(hexdata,6)%64>=32 || off<20 || iplen<off+20 || n<off+20) return
+            client=ipv4(hexdata,12); server=ipv4(hexdata,16)
+        } else if (v==6) {
+            iplen=u16(hexdata,4)+40; nex=b(hexdata,6); off=40; loops=0
+            while ((nex==0 || nex==43 || nex==60 || nex==135 || nex==51) && loops<8) {
+                if (off+2>n) return
+                extlen=(nex==51 ? (b(hexdata,off+1)+2)*4 : (b(hexdata,off+1)+1)*8)
+                nex=b(hexdata,off); off+=extlen; loops++
+            }
+            if (nex==44 || nex!=6 || off+20>n || iplen<off+20) return
+            client=ipv6(hexdata,8); server=ipv6(hexdata,24)
+        } else return
+        tcp=off
+        if (u16(hexdata,tcp+2)!=443) return
+        thlen=int(b(hexdata,tcp+12)/16)*4
+        if (thlen<20 || tcp+thlen>n) return
+        plen=iplen-tcp-thlen
+        if (plen<0 || tcp+thlen+plen>n) return
+        sport=u16(hexdata,tcp)
+        mapkey=client SUBSEP server SUBSEP sport SUBSEP 443
+        # Client-to-server ACKs keep a learned tuple alive even when the IPTV
+        # stream is mostly server-to-client. Refresh only near expiry, not per packet.
+        if ((mapkey in mexp) && mexp[mapkey]<now+TTL-10) { mexp[mapkey]=now+TTL; dirty=1 }
+        if (plen==0) return
+        seq=b(hexdata,tcp+4)*16777216+b(hexdata,tcp+5)*65536+b(hexdata,tcp+6)*256+b(hexdata,tcp+7)
+        payload=substr(hexdata,(tcp+thlen)*2+1,plen*2)
+        flow=client SUBSEP server SUBSEP sport SUBSEP "443"
+        if (!(flow in stream_next)) {
+            if (b(payload,0)!=22 || b(payload,1)!=3) return
+            stream_new(flow,payload,seq,plen)
+        } else if (seq==stream_next[flow]) {
+            stream_hex[flow]=stream_hex[flow] payload; stream_next[flow]=seq+plen; stream_time[flow]=now
+        } else if (seq<stream_next[flow] && seq+plen>stream_next[flow]) {
+            trim=stream_next[flow]-seq
+            stream_hex[flow]=stream_hex[flow] substr(payload,trim*2+1); stream_next[flow]=seq+plen; stream_time[flow]=now
+        } else if (seq>stream_next[flow]) {
+            # Gap/out-of-order segment: restart only when this packet itself begins a TLS record.
+            if (b(payload,0)==22 && b(payload,1)==3) { stream_drop(flow); stream_new(flow,payload,seq,plen) }
+            else return
+        } else return
+        if (length(stream_hex[flow])>65536) { stream_drop(flow); return }
+        host=parse_sni(stream_hex[flow])
+        if (host!="") {
+            learn(client,server,sport,host)
+            stream_drop(flow)
+        }
+    }
+    function append_hex_line(line,   off,rest,prefix,f,n,i,w,added) {
+        sub(/^[ \t]+/,"",line)
+        if (!match(line,/^0x[0-9a-fA-F]+:/)) return
+        prefix=line; sub(/^0x/,"",prefix); sub(/:.*/,"",prefix); off=hexval(prefix)
+        rest=line; sub(/^0x[0-9a-fA-F]+:[ \t]*/,"",rest)
+        n=split(rest,f,/[ \t]+/); added=0
+        if (off!=hex_expected) return
+        for (i=1;i<=n && added<16;i++) {
+            w=f[i]
+            if (length(w)==4 && w ~ /^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$/) {
+                hexdata=hexdata tolower(w); added+=2
+            } else if (length(w)==2 && w ~ /^[0-9a-fA-F][0-9a-fA-F]$/) {
+                hexdata=hexdata tolower(w); added++
+            } else break
+        }
+        hex_expected+=added
+    }
+    function finish_packet(   ts) {
+        if (packet_client!="" && hexdata!="") {
+            ts=packet_time+0
+            if (ts>0) now=ts
+            if (now-last_stream_clean>=5) { clean_streams(); last_stream_clean=now }
+            process_packet()
+            if (dirty && (now-lastflush>=2 || lastflush==0)) flush()
+        }
+        packet_client=""; packet_server=""; packet_time=0; hexdata=""; hex_expected=0; drop_packet=0; netidx=0; ipver=0
+    }
+    BEGIN {
+        MAXMAP=4096; MAXSTREAMS=128; version=0; nmap=0; nstream=0; dirty=0; lastflush=0; last_stream_clean=0
+        now=0; cmd="date +%s"; cmd | getline now; close(cmd); now+=0
+        split(IFACES,iflist,","); for (i in iflist) wanted_iface[iflist[i]]=1
+        while ((getline oldline < MAP)>0) {
+            n=split(oldline,oldf,"\t")
+            if (n>=6 && oldf[1]!="" && oldf[2]!="" && oldf[3] ~ /^[0-9]+$/ && oldf[4]=="443" && valid_name(oldf[5]) && oldf[6]+0>now) {
+                key=oldf[1] SUBSEP oldf[2] SUBSEP oldf[3] SUBSEP oldf[4]
+                mclient[key]=oldf[1]; mip[key]=oldf[2]; msport[key]=oldf[3]; mdport[key]=oldf[4]; mhost[key]=oldf[5]; mexp[key]=oldf[6]+0; nmap++
+            }
+        }
+        close(MAP)
+    }
+    # Main reader finalizes the previous packet before parsing a new packet header.
+    {
+        # hex dump lines first: an ASCII column containing "IP" must not split a packet
+        if ($1 ~ /^0x[0-9a-fA-F]+:/) { append_hex_line($0); next }
+        idx=0
+        for (i=1;i<=NF;i++) if ($i=="IP" || $i=="IP6") { idx=i; break }
+        if (idx>0) {
+            finish_packet()
+            if (packet_header()) packet_time=$1+0
+            next
+        }
+    }
+    END { finish_packet(); if (dirty) flush() }
+    '
+}
+
+if [ "$ONCE" = "1" ]; then
+    run_reader
+    exit 0
+fi
+
+# Use a FIFO so procd can stop both tcpdump and the AWK reader without leaving an orphan.
+FIFO="$OUT_DIR/sni.$$.fifo"
+SPID=""; RPID=""
+cleanup() {
+    trap - TERM INT HUP EXIT
+    [ -n "$RPID" ] && kill "$RPID" 2>/dev/null
+    [ -n "$SPID" ] && kill "$SPID" 2>/dev/null
+    rm -f "$FIFO"
+    exit 0
+}
+trap cleanup TERM INT HUP EXIT
+
+while true; do
+    SNI_IFACE_AVAILABLE=0
+    for iface in $SNI_IFACE_LIST; do
+        if [ -e "${SYSNET:-/sys/class/net}/$iface" ]; then SNI_IFACE_AVAILABLE=1; fi
+    done
+    if [ "$SNI_IFACE_AVAILABLE" -eq 1 ]; then
+        SNI_FILTER=""
+        for _f in "$SNI_FILTER_FULL" "$SNI_FILTER_HS"; do
+            if $TCPDUMP -i "$SNI_CAPTURE_DEVICE" -d "$_f" >/dev/null 2>&1; then SNI_FILTER="$_f"; break; fi
+        done
+        if [ -z "$SNI_FILTER" ]; then
+            SNI_FILTER="$SNI_FILTER_ALL"
+            logger -t trafficchart "TLS SNI: tcpdump rejected the handshake filters - capturing all tcp/443 packets"
+        fi
+        rm -f "$FIFO"
+        if mkfifo "$FIFO" 2>/dev/null; then
+            $TCPDUMP -i "$SNI_CAPTURE_DEVICE" -p -nn -l -tt -s 0 -X -S "$SNI_FILTER" 2>/dev/null > "$FIFO" &
+            SPID=$!
+            run_reader < "$FIFO" &
+            RPID=$!
+            tc_mem_watch "$RPID" "" trafficchart-sni
+            kill "$SPID" 2>/dev/null
+            SPID=""; RPID=""
+        else
+            $TCPDUMP -i "$SNI_CAPTURE_DEVICE" -p -nn -l -tt -s 0 -X -S "$SNI_FILTER" 2>/dev/null | run_reader
+        fi
+    else
+        logger -t trafficchart "none of the configured dns_iface devices (TLS SNI) '$SNI_IFACES' exist - waiting"
+    fi
+    sleep 5 &
+    wait $!
+done
