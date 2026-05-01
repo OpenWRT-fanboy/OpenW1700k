@@ -1,0 +1,7 @@
+*.swp
+*.tmp
+.DS_Store
+node_modules/
+
+# Local review output; never committed.
+.regents/
