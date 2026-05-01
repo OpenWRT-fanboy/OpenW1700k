@@ -1,0 +1,141 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Fixed-operation persistence helper. Arguments are data, never shell code.
+#
+# Storage files live only below /mnt, /media or /tmp/mnt. Do not follow a
+# storage-file symlink: these paths may be on removable or network storage that
+# is writable by another machine/user. In particular, append must not use shell
+# redirection on an unchecked destination (a symlink could redirect a root
+# write into the router's filesystem).
+set -f
+umask 077
+[ "$#" -eq 4 ] || exit 2
+op=$1
+a=$2
+b=$3
+c=$4
+
+storage_tree() {
+    case "$1" in
+        /mnt|/mnt/*|/media|/media/*|/tmp/mnt|/tmp/mnt/*) return 0 ;;
+        /etc/trafficchart-data|/etc/trafficchart-data/*) return 0 ;;   # internal flash (daily-only targets, validated by trafficchart-agg)
+        *) return 1 ;;
+    esac
+}
+
+# Resolve the parent (not the file) and validate the final component without
+# following it. SAFE_DIR / SAFE_PATH are set on success; a missing final file
+# is allowed for first-time history creation.
+storage_file() {
+    path=$1
+    case "$path" in /*) ;; *) return 1 ;; esac
+    name=${path##*/}
+    parent=${path%/*}
+    [ -n "$parent" ] || parent=/
+    case "$name" in
+        ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    [ -d "$parent" ] || return 1
+    resolved=$(readlink -f "$parent" 2>/dev/null) || return 1
+    storage_tree "$resolved" || return 1
+    resolved_path="$resolved/$name"
+    # Check both spellings to reject a direct symlink, including a dangling one.
+    [ ! -L "$path" ] && [ ! -L "$resolved_path" ] || return 1
+    if [ -e "$resolved_path" ] && [ ! -f "$resolved_path" ]; then
+        return 1
+    fi
+    SAFE_DIR=$resolved
+    SAFE_PATH=$resolved_path
+    return 0
+}
+
+source_file() {
+    [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+write_append_body() {
+    if [ -e "$SAFE_PATH" ]; then
+        cat "$SAFE_PATH" || return 1
+        # A crash/power loss can leave a complete JSONL record without its
+        # final newline. Separate the next append from that record so one torn
+        # delimiter never corrupts all subsequent persisted buckets.
+        if [ -s "$SAFE_PATH" ]; then
+            last_byte=$(tail -c 1 "$SAFE_PATH" 2>/dev/null | od -An -tu1 | tr -d '[:space:]')
+            [ "$last_byte" = 10 ] || printf '\n'
+        fi
+    fi
+    cat "$a"
+}
+
+case "$op" in
+  check)
+    [ -d "$a" ] && [ -w "$a" ] || exit 1
+    # Symlinks are resolved: the directory must really be below a storage tree.
+    rp=$(readlink -f "$a" 2>/dev/null) || exit 1
+    storage_tree "$rp" || exit 1
+    ;;
+  read)
+    storage_file "$a" || exit 1
+    # The destination is a private runtime file supplied by the root daemon.
+    # Reject directories explicitly: `mv tmp existing-directory` succeeds by
+    # moving the temp file INTO that directory, falsely reporting a completed read.
+    [ ! -L "$b" ] && [ ! -d "$b" ] || exit 1
+    outdir=${b%/*}
+    [ -d "$outdir" ] || exit 1
+    tmp=$(mktemp "$outdir/.trafficchart-read.XXXXXX") || exit 1
+    if [ -e "$SAFE_PATH" ]; then
+        cat "$SAFE_PATH" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    fi
+    mv -f "$tmp" "$b" || { rm -f "$tmp"; exit 1; }
+    ;;
+  append)
+    source_file "$a" || exit 1
+    storage_file "$b" || exit 1
+    # Appending a file to itself would duplicate every record while appearing
+    # successful. Compare resolved paths so parent-directory aliases are caught too.
+    source_resolved=$(readlink -f "$a" 2>/dev/null) || exit 1
+    [ "$source_resolved" != "$SAFE_PATH" ] || exit 1
+    # Create the temporary file with noclobber active for the same shell
+    # redirection that opens it. mktemp followed by a second open leaves a
+    # replacement window on externally writable storage.
+    i=0
+    while [ "$i" -lt 100 ]; do
+        tmp="$SAFE_DIR/.trafficchart-append.$$.$i"
+        if [ -e "$tmp" ] || [ -L "$tmp" ]; then i=$((i + 1)); continue; fi
+        created=0
+        set -C
+        if { created=1; write_append_body; } > "$tmp"; then
+            set +C
+            break
+        fi
+        set +C
+        if [ "$created" = 1 ]; then rm -f "$tmp"; exit 1; fi
+        i=$((i + 1))
+    done
+    [ "$i" -lt 100 ] || exit 1
+    mv -f "$tmp" "$SAFE_PATH" || { rm -f "$tmp"; exit 1; }
+    ;;
+  replace)
+    source_file "$a" || exit 1
+    storage_file "$b" || exit 1
+    # The same noclobber/create-and-open rule as append prevents a pre-existing
+    # file or symlink at the temporary name from redirecting a root write.
+    i=0
+    while [ "$i" -lt 100 ]; do
+        tmp="$SAFE_DIR/.trafficchart-replace.$$.$i"
+        if [ -e "$tmp" ] || [ -L "$tmp" ]; then i=$((i + 1)); continue; fi
+        created=0
+        set -C
+        if { created=1; cat "$a"; } > "$tmp"; then
+            set +C
+            break
+        fi
+        set +C
+        if [ "$created" = 1 ]; then rm -f "$tmp"; exit 1; fi
+        i=$((i + 1))
+    done
+    [ "$i" -lt 100 ] || exit 1
+    mv -f "$tmp" "$SAFE_PATH" || { rm -f "$tmp"; exit 1; }
+    ;;
+  *) exit 2 ;;
+esac

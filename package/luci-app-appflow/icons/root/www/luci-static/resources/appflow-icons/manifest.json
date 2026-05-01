@@ -1,0 +1,406 @@
+{
+  "Skype/Teams/Call": {
+    "file": "dashboard-icons__skype.svg",
+    "source": "dashboard-icons"
+  },
+  "SignalCall": {
+    "file": "simple-icons__signal.svg",
+    "source": "simple-icons"
+  },
+  "Xbox": {
+    "file": "dashboard-icons__xbox.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.yahoo": {
+    "file": "dashboard-icons__yahoo.svg",
+    "source": "dashboard-icons"
+  },
+  "Steam": {
+    "file": "simple-icons__steam.svg",
+    "source": "simple-icons"
+  },
+  "netify.facebook": {
+    "file": "simple-icons__facebook.svg",
+    "source": "simple-icons"
+  },
+  "netify.twitter": {
+    "file": "dashboard-icons__twitter.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.dropbox": {
+    "file": "simple-icons__dropbox.svg",
+    "source": "simple-icons"
+  },
+  "netify.google-maps": {
+    "file": "simple-icons__googlemaps.svg",
+    "source": "simple-icons"
+  },
+  "netify.youtube": {
+    "file": "simple-icons__youtube.svg",
+    "source": "simple-icons"
+  },
+  "netify.netflix": {
+    "file": "simple-icons__netflix.svg",
+    "source": "simple-icons"
+  },
+  "WhatsApp": {
+    "file": "simple-icons__whatsapp.svg",
+    "source": "simple-icons"
+  },
+  "netify.apple-icloud": {
+    "file": "simple-icons__icloud.svg",
+    "source": "simple-icons"
+  },
+  "Viber": {
+    "file": "simple-icons__viber.svg",
+    "source": "simple-icons"
+  },
+  "netify.apple-itunes": {
+    "file": "simple-icons__itunes.svg",
+    "source": "simple-icons"
+  },
+  "TeamViewer": {
+    "file": "simple-icons__teamviewer.svg",
+    "source": "simple-icons"
+  },
+  "SAP": {
+    "file": "simple-icons__sap.svg",
+    "source": "simple-icons"
+  },
+  "netify.spotify": {
+    "file": "simple-icons__spotify.svg",
+    "source": "simple-icons"
+  },
+  "OpenVPN": {
+    "file": "simple-icons__openvpn.svg",
+    "source": "simple-icons"
+  },
+  "Oracle": {
+    "file": "dashboard-icons__oracle.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.wikipedia": {
+    "file": "simple-icons__wikipedia.svg",
+    "source": "simple-icons"
+  },
+  "netify.amazon": {
+    "file": "dashboard-icons__amazon.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.ebay": {
+    "file": "simple-icons__ebay.svg",
+    "source": "simple-icons"
+  },
+  "Telegram": {
+    "file": "simple-icons__telegram.svg",
+    "source": "simple-icons"
+  },
+  "netify.pandora": {
+    "file": "simple-icons__pandora.svg",
+    "source": "simple-icons"
+  },
+  "KakaoTalk/Voice": {
+    "file": "simple-icons__kakaotalk.svg",
+    "source": "simple-icons"
+  },
+  "netify.twitch": {
+    "file": "simple-icons__twitch.svg",
+    "source": "simple-icons"
+  },
+  "netify.snapchat": {
+    "file": "simple-icons__snapchat.svg",
+    "source": "simple-icons"
+  },
+  "netify.instagram": {
+    "file": "simple-icons__instagram.svg",
+    "source": "simple-icons"
+  },
+  "netify.microsoft": {
+    "file": "dashboard-icons__microsoft.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.cloudflare": {
+    "file": "simple-icons__cloudflare.svg",
+    "source": "simple-icons"
+  },
+  "netify.microsoft-onedrive": {
+    "file": "dashboard-icons__microsoft-onedrive.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.weibo": {
+    "file": "dashboard-icons__weibo.svg",
+    "source": "dashboard-icons"
+  },
+  "Google/Meet/Duo": {
+    "file": "simple-icons__googlemeet.svg",
+    "source": "simple-icons"
+  },
+  "WhatsApp/Call": {
+    "file": "simple-icons__whatsapp.svg",
+    "source": "simple-icons"
+  },
+  "Skype/Teams": {
+    "file": "dashboard-icons__skype.svg",
+    "source": "dashboard-icons"
+  },
+  "ZOOM": {
+    "file": "simple-icons__zoom.svg",
+    "source": "simple-icons"
+  },
+  "Snapchat/Call": {
+    "file": "simple-icons__snapchat.svg",
+    "source": "simple-icons"
+  },
+  "Riot/Games": {
+    "file": "simple-icons__riotgames.svg",
+    "source": "simple-icons"
+  },
+  "Threema": {
+    "file": "simple-icons__threema.svg",
+    "source": "simple-icons"
+  },
+  "AVAST": {
+    "file": "simple-icons__avast.svg",
+    "source": "simple-icons"
+  },
+  "Line/Call": {
+    "file": "simple-icons__line.svg",
+    "source": "simple-icons"
+  },
+  "Tailscale": {
+    "file": "simple-icons__tailscale.svg",
+    "source": "simple-icons"
+  },
+  "netify.github": {
+    "file": "simple-icons__github.svg",
+    "source": "simple-icons"
+  },
+  "netify.reddit": {
+    "file": "simple-icons__reddit.svg",
+    "source": "simple-icons"
+  },
+  "netify.playstation": {
+    "file": "simple-icons__playstation.svg",
+    "source": "simple-icons"
+  },
+  "netify.bing": {
+    "file": "dashboard-icons__bing.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.mlb": {
+    "file": "simple-icons__mlb.svg",
+    "source": "simple-icons"
+  },
+  "netify.nhl": {
+    "file": "simple-icons__nhl.svg",
+    "source": "simple-icons"
+  },
+  "netify.shopify": {
+    "file": "simple-icons__shopify.svg",
+    "source": "simple-icons"
+  },
+  "netify.roblox": {
+    "file": "simple-icons__roblox.svg",
+    "source": "simple-icons"
+  },
+  "netify.google-ads": {
+    "file": "simple-icons__googleads.svg",
+    "source": "simple-icons"
+  },
+  "netify.vimeo": {
+    "file": "simple-icons__vimeo.svg",
+    "source": "simple-icons"
+  },
+  "netify.soundcloud": {
+    "file": "simple-icons__soundcloud.svg",
+    "source": "simple-icons"
+  },
+  "netify.airbnb": {
+    "file": "simple-icons__airbnb.svg",
+    "source": "simple-icons"
+  },
+  "netify.paypal": {
+    "file": "simple-icons__paypal.svg",
+    "source": "simple-icons"
+  },
+  "netify.tumblr": {
+    "file": "simple-icons__tumblr.svg",
+    "source": "simple-icons"
+  },
+  "netify.linkedin": {
+    "file": "dashboard-icons__linkedin.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.pinterest": {
+    "file": "simple-icons__pinterest.svg",
+    "source": "simple-icons"
+  },
+  "netify.firefox": {
+    "file": "simple-icons__firefox.svg",
+    "source": "simple-icons"
+  },
+  "netify.amazon-aws": {
+    "file": "dashboard-icons__amazon-web-services.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.baidu": {
+    "file": "simple-icons__baidu.svg",
+    "source": "simple-icons"
+  },
+  "netify.adobe": {
+    "file": "dashboard-icons__adobe.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.salesforce": {
+    "file": "dashboard-icons__salesforce.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.avast": {
+    "file": "simple-icons__avast.svg",
+    "source": "simple-icons"
+  },
+  "netify.malwarebytes": {
+    "file": "simple-icons__malwarebytes.svg",
+    "source": "simple-icons"
+  },
+  "netify.mcafee": {
+    "file": "simple-icons__mcafee.svg",
+    "source": "simple-icons"
+  },
+  "netify.kaspersky": {
+    "file": "simple-icons__kaspersky.svg",
+    "source": "simple-icons"
+  },
+  "netify.bitdefender": {
+    "file": "simple-icons__bitdefender.svg",
+    "source": "simple-icons"
+  },
+  "netify.sophos": {
+    "file": "dashboard-icons__sophos.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.epic-games": {
+    "file": "simple-icons__epicgames.svg",
+    "source": "simple-icons"
+  },
+  "netify.docker": {
+    "file": "simple-icons__docker.svg",
+    "source": "simple-icons"
+  },
+  "netify.gitlab": {
+    "file": "simple-icons__gitlab.svg",
+    "source": "simple-icons"
+  },
+  "netify.slack": {
+    "file": "dashboard-icons__slack.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.xbox": {
+    "file": "dashboard-icons__xbox.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.ubuntu": {
+    "file": "simple-icons__ubuntu.svg",
+    "source": "simple-icons"
+  },
+  "netify.discord": {
+    "file": "simple-icons__discord.svg",
+    "source": "simple-icons"
+  },
+  "netify.fitbit": {
+    "file": "simple-icons__fitbit.svg",
+    "source": "simple-icons"
+  },
+  "netify.tiktok": {
+    "file": "simple-icons__tiktok.svg",
+    "source": "simple-icons"
+  },
+  "netify.intuit": {
+    "file": "simple-icons__intuit.svg",
+    "source": "simple-icons"
+  },
+  "netify.grammarly": {
+    "file": "simple-icons__grammarly.svg",
+    "source": "simple-icons"
+  },
+  "netify.hulu": {
+    "file": "dashboard-icons__hulu.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.tinder": {
+    "file": "simple-icons__tinder.svg",
+    "source": "simple-icons"
+  },
+  "netify.disney-plus": {
+    "file": "dashboard-icons__disney-plus.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.xbox-live": {
+    "file": "dashboard-icons__xbox.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.dazn": {
+    "file": "simple-icons__dazn.svg",
+    "source": "simple-icons"
+  },
+  "netify.palo-alto-networks": {
+    "file": "simple-icons__paloaltonetworks.svg",
+    "source": "simple-icons"
+  },
+  "netify.tesla": {
+    "file": "simple-icons__tesla.svg",
+    "source": "simple-icons"
+  },
+  "netify.nba": {
+    "file": "simple-icons__nba.svg",
+    "source": "simple-icons"
+  },
+  "netify.red-hat": {
+    "file": "simple-icons__redhat.svg",
+    "source": "simple-icons"
+  },
+  "netify.google-cloud": {
+    "file": "simple-icons__googlecloud.svg",
+    "source": "simple-icons"
+  },
+  "netify.alipay": {
+    "file": "simple-icons__alipay.svg",
+    "source": "simple-icons"
+  },
+  "netify.visa": {
+    "file": "simple-icons__visa.svg",
+    "source": "simple-icons"
+  },
+  "netify.samsung-tv": {
+    "file": "simple-icons__samsung.svg",
+    "source": "simple-icons"
+  },
+  "netify.coinbase": {
+    "file": "simple-icons__coinbase.svg",
+    "source": "simple-icons"
+  },
+  "netify.mastercard": {
+    "file": "simple-icons__mastercard.svg",
+    "source": "simple-icons"
+  },
+  "netify.fifa": {
+    "file": "simple-icons__fifa.svg",
+    "source": "simple-icons"
+  },
+  "netify.quora": {
+    "file": "simple-icons__quora.svg",
+    "source": "simple-icons"
+  },
+  "netify.google-play": {
+    "file": "simple-icons__googleplay.svg",
+    "source": "simple-icons"
+  },
+  "netify.crowdstrike": {
+    "file": "dashboard-icons__crowdstrike.svg",
+    "source": "dashboard-icons"
+  },
+  "netify.windows": {
+    "file": "dashboard-icons__microsoft-windows.svg",
+    "source": "dashboard-icons"
+  }
+}
