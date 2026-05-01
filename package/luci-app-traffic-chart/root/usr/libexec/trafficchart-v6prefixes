@@ -1,0 +1,125 @@
+#!/bin/sh
+# trafficchart-v6prefixes - print a regex matching the LAN-side IPv6 GUA
+# prefixes in the fully expanded form used by /proc/net/nf_conntrack.
+# Prints nothing if there are none.
+#
+# Connected global routes can exist on WAN devices too (for example a routed
+# public /64 on Ethernet WAN). Treating those as LAN prefixes causes the
+# aggregator to discard traffic to other addresses in that subnet. Exclude all
+# known WAN devices: default-route devices, explicitly configured wan_dev
+# devices, and the device/l3_device for logical wan and wan6.
+#
+# "ip -6 route show" prints compressed addresses ("2a02:1234:5678:1::/64"),
+# the conntrack proc file prints them expanded and zero padded
+# ("2a02:1234:5678:0001:...") so each route is expanded to 8 groups first.
+#
+# The prefix is matched exactly, also for lengths that are not a multiple of 16
+# (/60, /65 ...): full 16-bit groups literally, a partially covered group with
+# a hex-digit character class derived from its fixed high bits (nibble_class()).
+
+IP_STATUS=0
+WAN_IFACES=""
+add_wan_iface() {
+    case "$1" in ''|*[!A-Za-z0-9._@-]*) return ;; esac
+    case " $WAN_IFACES " in *" $1 "*) return ;; esac
+    WAN_IFACES="${WAN_IFACES:+$WAN_IFACES }$1"
+}
+
+# Include every active default-route device (including policy/multi-WAN defaults).
+# Capture each command's exit status explicitly; a downstream awk pipeline would
+# otherwise turn an `ip` failure into a successful empty WAN-device list.
+ROUTES4=$(ip -4 route show default 2>/dev/null) || IP_STATUS=1
+ROUTES6=$(ip -6 route show default 2>/dev/null) || IP_STATUS=1
+for d in $(printf '%s\n%s\n' "$ROUTES4" "$ROUTES6" | awk '{ for (i=1;i<NF;i++) if ($i=="dev") print $(i+1) }'); do
+    add_wan_iface "$d"
+done
+
+# Explicit Traffic Chart overrides may be device names or logical interface names.
+if command -v uci >/dev/null 2>&1; then
+    for w in $(uci -q get trafficchart.global.wan_dev 2>/dev/null); do
+        add_wan_iface "$w"
+        if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+            for d in $(ubus call "network.interface.$w" status 2>/dev/null | jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null); do
+                add_wan_iface "$d"
+            done
+        fi
+    done
+fi
+
+# Match the same automatic WAN fallbacks used by trafficchart-common, also
+# when the WAN currently has no default route and wan_dev was not configured.
+if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+    for w in wan wan6; do
+        for d in $(ubus call "network.interface.$w" status 2>/dev/null | jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null); do
+            add_wan_iface "$d"
+        done
+    done
+fi
+
+GLOBAL_ROUTES=$(ip -6 route show scope global 2>/dev/null) || IP_STATUS=1
+printf '%s\n' "$GLOBAL_ROUTES" | awk -v WAN_IFACES="$WAN_IFACES" '
+    function is_wan(d,   a,n,i) {
+        n = split(WAN_IFACES, a, /[ \t]+/)
+        for (i=1; i<=n; i++) if (a[i] != "" && a[i] == d) return 1
+        return 0
+    }
+    function hexdigit(v) { return substr("0123456789abcdef", v + 1, 1) }
+
+    # Regex for one hex digit whose top "bits" bits (0-4) must equal the top
+    # "bits" bits of nibble value v (0-15). bits>=4 -> exact digit,
+    # bits<=0 -> any digit, otherwise a contiguous character class.
+    function nibble_class(v, bits,   size, base, lo, hi) {
+        if (bits <= 0) return "[0-9a-f]"
+        if (bits >= 4) return hexdigit(v)
+        size = (bits == 1) ? 8 : (bits == 2) ? 4 : 2
+        base = int(v / size) * size
+        lo = base; hi = base + size - 1
+        return (lo == hi) ? hexdigit(lo) : "[" hexdigit(lo) "-" hexdigit(hi) "]"
+    }
+
+    !/^default/ && $1 ~ /^[23]/ {
+        n = split($1, parts, "/")
+        addr = parts[1]
+        mask = (n == 2) ? parts[2] + 0 : 128
+        if (mask <= 0) next
+        if (mask > 128) mask = 128
+        route_dev = ""
+        for (i=1; i<NF; i++) if ($i == "dev") { route_dev=$(i+1); break }
+        # Prefixes without a device cannot be reliably attributed to the LAN;
+        # skip them rather than misclassifying arbitrary public routes as local.
+        if (route_dev == "" || is_wan(route_dev)) next
+
+        sn = split(addr, halves, "::")
+        if (sn == 2) { left = halves[1]; right = halves[2] }
+        else if (sn == 1) { left = halves[1]; right = "" }
+        else next
+
+        lc = (left == "") ? 0 : split(left, lg, ":")
+        rc = (right == "") ? 0 : split(right, rg, ":")
+        missing = 8 - lc - rc
+        if (missing < 0) next
+
+        idx = 0
+        for (i = 1; i <= lc; i++) { g = lg[i]; while (length(g) < 4) g = "0" g; full[++idx] = tolower(g) }
+        for (i = 1; i <= missing; i++) full[++idx] = "0000"
+        for (i = 1; i <= rc; i++) { g = rg[i]; while (length(g) < 4) g = "0" g; full[++idx] = tolower(g) }
+        if (idx != 8) next
+
+        full_groups = int(mask / 16)
+        rem_bits = mask - full_groups * 16
+        out = "^"; sep = ""
+        for (i = 1; i <= full_groups; i++) { out = out sep full[i]; sep = ":" }
+        if (rem_bits > 0 && full_groups < 8) {
+            g = full[full_groups + 1]
+            nfull = int(rem_bits / 4); nrembits = rem_bits - nfull * 4; part = ""
+            for (i = 1; i <= nfull; i++) part = part substr(g, i, 1)
+            if (nrembits > 0) {
+                dv = index("0123456789abcdef", substr(g, nfull + 1, 1)) - 1
+                part = part nibble_class(dv, nrembits)
+            }
+            out = out sep part
+        }
+        print out
+    }
+' | tr '\n' '|' | sed 's/|$//'
+exit "$IP_STATUS"

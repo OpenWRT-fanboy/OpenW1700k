@@ -1,0 +1,24 @@
+nss-trafficchart.qos is an SQM script for Qualcomm NSS hardware offload (nsstbl +
+nssfq_codel) with port based traffic classes (nftables marks + DSCP).
+
+Select the queue discipline "fq_codel" and this script. Only fq_codel is
+supported. Only ONE SQM instance is supported (shared nssifb / nft table).
+
+Only the low byte (0xff) of the packet/conntrack mark is used; other mark bits
+are preserved.
+
+Options in /etc/config/trafficchart (section global) or LuCI "Traffic Chart Settings":
+  option bulk_bytes '314572800'      TCP/UDP flows of class WEB/P2P/BE above this size
+                                     (default 300 MiB) become BULK
+  option reset_ct_marks '1'          zero the ct marks on (re)start so every flow is
+                                     classified again; use 0 with mwan3
+  option dns_redirect '0'            1 = redirect DNS from all non-WAN interfaces
+  option dns_redirect_exclude 'wg0'  interfaces left out of that redirect
+  option ttl_fix '0'                 1 = rewrite TTL / hop limit 63,127 -> 64
+
+dns_redirect and ttl_fix are off by default. Restart SQM after changing any option.
+
+Script options (SQM "Advanced" page):
+  ETARGET / ITARGET     codel target (default 5ms)
+  ELIMIT / ILIMIT       queue limit in packets (default: calculated, 100 ms)
+  EQDISC_OPTS / IQDISC_OPTS   extra nssfq_codel options (interval, quantum, flows)
