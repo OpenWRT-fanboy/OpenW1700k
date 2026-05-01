@@ -1,0 +1,661 @@
+#!/bin/sh
+# trafficchart-dns - DNS answers seen on the LAN bridge -> "IP -> domain / application" map
+#
+# Replacement / complement for netifyd (trafficchart-apps). Works with ANY resolver (dnsmasq,
+# unbound, AdGuard Home ...) because it does not ask the resolver: it reads the clear text DNS
+# traffic on the LAN bridge with tcpdump, joins every answer to its query (client address +
+# client port + DNS id) and writes
+#     $OUT_DIR/dns.map      one line per mapping: <client-ip> TAB <answer-ip> TAB <domain> TAB <application> TAB <expires> TAB <groups>
+#     $OUT_DIR/dns.map.ver  bumped after every write (trafficchart-agg re-reads only on change)
+# <client-ip> and <answer-ip> are the IPv4/IPv6 endpoints; <domain> is the name the client asked
+# for (not the CNAME target), <application> comes from the suffix/regex rules (empty if no rule
+# matches), and <groups> contains the classification memberships used for warnings.
+# The runtime map is v2 and is consumed by trafficchart-agg; IPv6 addresses stay textual here.
+#
+# Limits: DoH / DoT / DoQ of clients is invisible, so are hard coded addresses, and one address
+# shared by many domains (CDN) carries the domain that was answered last.
+#
+# Needs: tcpdump (the full one, tcpdump-mini was not tested).
+# Settings (/etc/config/trafficchart, section global):
+#   option dns_iface 'br-lan'      bridge / device to listen on (one device)
+# Rules: /etc/trafficchart-domains only (generated from v2fly by trafficchart-domains-update, "suffix<TAB>Application").
+# Environment (testing): ONCE=1 reads tcpdump -tt text from stdin, OUT_DIR AWK TCPDUMP RULES_FILE TC_COMMON
+
+. "${TC_COMMON:-/usr/libexec/trafficchart-common}" || exit 1
+tc_cfg DNS_IFACE br-lan iface
+tc_cfg INTERVAL 4 pint
+tc_cfg ALERT_GROUPS "category-porn" groups
+case "$DNS_IFACE" in ''|*[!A-Za-z0-9._-]*) DNS_IFACE=br-lan ;; esac
+FLUSH_S=$((INTERVAL / 2))
+[ "$FLUSH_S" -ge 2 ] || FLUSH_S=2
+OUT_DIR="${OUT_DIR:-/var/run/trafficchart}"
+AWK="${AWK:-awk}"
+TCPDUMP="${TCPDUMP:-tcpdump}"
+RULES_FILE="${RULES_FILE:-/etc/trafficchart-domains}"
+ONCE="${ONCE:-0}"
+
+umask 077
+mkdir -p "$OUT_DIR" || exit 1
+chmod 700 "$OUT_DIR" 2>/dev/null || exit 1
+
+if [ "$ONCE" != "1" ] && ! command -v "$TCPDUMP" >/dev/null 2>&1; then
+    logger -t trafficchart "tcpdump not installed - DNS names disabled, everything else unaffected"
+    while true; do sleep 3600; done
+fi
+
+run_reader() {
+    exec $AWK -v MAP="$OUT_DIR/dns.map" -v TMPID="$$" -v FLUSH_S="$FLUSH_S" -v RULES="$RULES_FILE" -v ALERT_GROUPS="$ALERT_GROUPS" '
+    # DNS map v2: client IP<TAB>destination IP<TAB>queried name<TAB>application<TAB>expires epoch.
+    # The client+destination key avoids letting one LAN client overwrite another client\x27s CDN name.
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss, ip, oct, tail) {
+        if (index(a, ":") == 0) return a
+        # inet_ntop-style IPv6 text can include a dotted-decimal IPv4 tail; convert it to two hextets before expansion.
+        if (a ~ /\./) {
+            ip = a
+            if (ip !~ /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return tolower(a)
+            sub(/^.*:/, "", ip)
+            if (split(ip, oct, ".") != 4) return tolower(a)
+            for (i = 1; i <= 4; i++) if (oct[i] !~ /^[0-9]+$/ || oct[i] + 0 > 255) return tolower(a)
+            tail = sprintf("%x:%x", (oct[1] + 0) * 256 + (oct[2] + 0), (oct[3] + 0) * 256 + (oct[4] + 0))
+            sub(/[^:]*$/, tail, a)
+        }
+        a = tolower(a)
+        if (a ~ /:::/) return a
+        n = split(a, h, "::")
+        if (n > 2) return a
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return tolower(a)
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++) { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    function endpoint_ip(ep) { sub(/:$/, "", ep); sub(/\.[0-9]+$/, "", ep); return v6full(ep) }
+    function cleanname(n) { n=tolower(n); sub(/[.,;]$/, "", n); sub(/\.$/, "", n); return n }
+    function validname(n) { return n ~ /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/ }
+    function valid4(a,   p, n, i) {
+        if (a !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return 0
+        n=split(a,p,"."); if (n!=4) return 0
+        for(i=1;i<=4;i++) if (p[i]+0>255 || p[i] !~ /^[0-9]+$/) return 0
+        return 1
+    }
+    function valid6(a,   t, n, l, r, p, i, lc, rc, oct, ip, bad) {
+        if (index(a, ":") == 0) return 0
+        # IPv4 tails are legal only as the final 32 bits of an IPv6 literal.
+        if (a ~ /\./) {
+            if (a !~ /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return 0
+            ip = a; sub(/^.*:/, "", ip)
+            if (split(ip, oct, ".") != 4) return 0
+            # RFC IPv4 dec-octets use canonical decimal syntax: leading zeroes
+            # are not permitted (except the single digit "0"). Reject ambiguous
+            # tails such as 192.00.2.1 before turning the address into hextets.
+            for (i = 1; i <= 4; i++)
+                if (oct[i] !~ /^[0-9]+$/ || oct[i] + 0 > 255 || (length(oct[i]) > 1 && substr(oct[i], 1, 1) == "0")) return 0
+            sub(/[^:]*$/, sprintf("%x:%x", (oct[1] + 0) * 256 + (oct[2] + 0), (oct[3] + 0) * 256 + (oct[4] + 0)), a)
+        }
+        if (a !~ /^[0-9A-Fa-f:]+$/ || a ~ /:::/) return 0
+        t = a; n = gsub(/::/, "X", t)
+        if (n > 1) return 0
+        if (n == 1) {
+            l = a; sub(/::.*/, "", l)
+            r = a; sub(/^.*::/, "", r)
+            lc = 0; rc = 0; bad = 0
+            if (l != "") {
+                if (l ~ /^:/ || l ~ /:$/) return 0
+                lc = split(l, p, ":")
+                for (i = 1; i <= lc; i++) if (p[i] !~ /^[0-9A-Fa-f]{1,4}$/) bad = 1
+            }
+            if (r != "") {
+                if (r ~ /^:/ || r ~ /:$/) return 0
+                rc = split(r, p, ":")
+                for (i = 1; i <= rc; i++) if (p[i] !~ /^[0-9A-Fa-f]{1,4}$/) bad = 1
+            }
+            if (bad) return 0
+            return (lc + rc < 8)
+        }
+        if (a ~ /^:/ || a ~ /:$/) return 0
+        n = split(a, p, ":")
+        if (n != 8) return 0
+        for (i = 1; i <= n; i++) if (p[i] !~ /^[0-9A-Fa-f]{1,4}$/) return 0
+        return 1
+    }
+    function isrr(t) { return t=="A" || t=="AAAA" || t=="CNAME" || t=="HTTPS" || t=="SVCB" }
+    # app_of / groups_of run for every address of every DNS answer (and once per saved map
+    # entry at start). The rules never change while this process runs (a rule update restarts
+    # it), so the result per name is cached; keyword and regex rules are short dedicated lists
+    # (kwt/gkt/grt) instead of a scan over the whole rule tables.
+    function app_of(name,   p,n,i,cand,best,bestkw,bestterm,kw) {
+        # v2fly full: rules are exact host matches; keyword: rules are substring matches.
+        # Exact host rules win; the longest keyword wins (lexical tie-break), and a
+        # domain-suffix rule overrides a keyword.
+        if (name in acache) return acache[name]
+        if (nac >= 4096) { split("", acache); split("", gcache); nac = 0 }
+        nac++
+        best = (("=" name) in rule) ? rule["=" name] : ""
+        if (best == "") {
+            bestkw = -1; bestterm = ""
+            for (i = 1; i <= nkw; i++) {
+                kw = kwt[i]
+                if (index(name, kw) && (length(kw) > bestkw || (length(kw) == bestkw && kw < bestterm))) {
+                    best = kwa[i]; bestkw = length(kw); bestterm = kw
+                }
+            }
+            cand = ""; n = split(name, p, ".")
+            for (i = n; i >= 1; i--) { cand = (cand == "") ? p[i] : p[i] "." cand; if (cand in rule) best = rule[cand] }
+        }
+        acache[name] = best
+        return best
+    }
+    function addg(list,   ng, parts, j) {
+        ng = split(list, parts, ",")
+        for (j = 1; j <= ng; j++)
+            if (parts[j] != "" && !(parts[j] in gseen)) { gseen[parts[j]] = 1; gout = gout (gout == "" ? "" : ",") parts[j] }
+    }
+    function groups_of(name,   p,n,i,cand) {
+        # Union of exact, keyword, regex and parent-domain categories, so a specific entry
+        # never hides a broader category membership.
+        if (name in gcache) return gcache[name]
+        gout = ""; split("", gseen)
+        if (("=" name) in groups) addg(groups["=" name])
+        for (i = 1; i <= nkwg; i++) if (index(name, gkt[i])) addg(gkg[i])
+        for (i = 1; i <= nrx; i++) if (name ~ grt[i]) addg(grg[i])
+        cand = ""; n = split(name, p, ".")
+        for (i = n; i >= 1; i--) { cand = (cand == "") ? p[i] : p[i] "." cand; if (cand in groups) addg(groups[cand]) }
+        gcache[name] = gout
+        return gout
+    }
+    function has_tcp_flags(   j) {
+        for (j=1; j<=NF; j++) if ($j == "Flags") return 1
+        return 0
+    }
+    # DNS transaction IDs are scoped by transport. tcpdump TCP payload summaries
+    # carry TCP flags; include that transport in the regular ID-based join key.
+    function dns_transport() { return has_tcp_flags() ? "tcp" : "udp" }
+    function req_id(i,   j,x,tcp) {
+        # When tcpdump decodes DNS-over-TCP, the visible summary can contain only
+        # "Flags ... length N A? name" (no DNS ID). Never turn "Flags" into ID 0.
+        # If an ID is printed, find it just before the question type / TCP payload.
+        tcp = has_tcp_flags()
+        for (j=i-1; j>=1 && j>=i-7; j--) {
+            x=$j
+            if (x ~ /^[0-9]+[+%]$/) { sub(/[+%]$/, "", x); return x+0 }
+        }
+        if (tcp) {
+            for (j=i-1; j>=1; j--) if ($j == "length") {
+                x=$(j+2)
+                if (j+2 < i && x ~ /^[0-9]+[+%]?$/) { sub(/[+%]$/, "", x); return x+0 }
+                return "__tcp_no_id__"
+            }
+            return "__tcp_no_id__"
+        }
+        x=$6; sub(/[^0-9].*$/, "", x); return x+0
+    }
+    function resp_id(   j,x,tcp) {
+        # A TCP summary that omits the DNS ID places its payload length immediately
+        # before the answer-count/status token. Return a sentinel so handle_resp can
+        # correlate only an unambiguous single outstanding query on that TCP tuple.
+        tcp = has_tcp_flags()
+        for (j=1; j<=NF; j++) {
+            if ($j ~ /^[0-9]+\/[0-9]+\/[0-9]+$/ || $j ~ /^(NXDomain|ServFail|Refused|FORMERR)/) {
+                if (tcp && $(j-2) == "length") return "__tcp_no_id__"
+                x=$(j-1); sub(/[^0-9].*$/, "", x)
+                if (x ~ /^[0-9]+$/) return x+0
+            }
+        }
+        if (tcp) return "__tcp_no_id__"
+        x=$6; sub(/[^0-9].*$/, "", x); return x+0
+    }
+    function tcp_clear(flow) {
+        if (flow in tcp_pending_count) ntcp--
+        delete tcp_pending_count[flow]; delete tcp_pending_name[flow]
+        delete tcp_pending_client[flow]; delete tcp_pending_type[flow]
+        delete tcp_pending_time[flow]; delete tcp_pending_ambiguous[flow]
+    }
+    function rrttl(j,   k,x) {
+        # tcpdump -vvv usually emits owner TTL IN TYPE RDATA; tolerate TYPE (TTL) RDATA too.
+        if (j >= 3 && $(j-1) == "IN" && $(j-2) ~ /^[0-9]+$/) return $(j-2)+0
+        if (j+2 <= NF && $(j+1) == "(" && $(j+2) ~ /^[0-9]+\)$/) { x=$(j+2); sub(/\)$/, "", x); return x+0 }
+        if (j+1 <= NF && $(j+1) ~ /^\([0-9]+\)$/) { x=$(j+1); gsub(/[()]/, "", x); return x+0 }
+        # tcpdump without decoded TTL: short fallback, never a permanent mapping.
+        return 60
+    }
+    function rr_owner(j, x) {
+        # Standard tcpdump -vvv output is: owner TTL IN TYPE RDATA.
+        # Accept compact owner IN TYPE and owner TYPE too, but never mistake an
+        # answer count such as 1/0/0 for a DNS owner when names are omitted.
+        if (j >= 4 && $(j-1) == "IN" && $(j-2) ~ /^[0-9]+$/) x=cleanname($(j-3))
+        else if (j >= 3 && $(j-1) == "IN" && $(j-2) !~ /^[0-9]+$/) x=cleanname($(j-2))
+        else if (j >= 2 && $(j-1) != "IN" && $(j-1) !~ /^[0-9]+$/ && $(j-1) !~ /^[(),;]+$/) x=cleanname($(j-1))
+        else return ""
+        return validname(x) ? x : ""
+    }
+    # CNAME links, per client: alias_target/alias_exp[client SUBSEP parent] = target / expiry, and
+    # the reverse index alias_rev[client SUBSEP target] = " parent1 parent2 ... " (at most 16),
+    # so the reverse walk in handle_resp is a lookup instead of a scan over the whole table.
+    # The table is capped at ALIASMAX entries (a new link is skipped while it is full; expired
+    # ones are removed every second by expire_maps).
+    function alias_del(ak,   parts, rk, lst, i) {
+        if (!(ak in alias_exp)) return
+        split(ak, parts, SUBSEP)
+        rk = parts[1] SUBSEP alias_target[ak]
+        if (rk in alias_rev) {
+            lst = alias_rev[rk]
+            i = index(lst, " " parts[2] " ")
+            if (i > 0) lst = substr(lst, 1, i) substr(lst, i + length(parts[2]) + 2)
+            if (lst == "" || lst == " ") delete alias_rev[rk]
+            else alias_rev[rk] = lst
+        }
+        delete alias_exp[ak]; delete alias_target[ak]; nalias--
+    }
+    function alias_set(client, parent, target, until,   ak, rk, lst, tmp) {
+        ak = client SUBSEP parent
+        if (ak in alias_exp) alias_del(ak)
+        if (nalias >= ALIASMAX) return
+        alias_target[ak] = target; alias_exp[ak] = until; nalias++
+        rk = client SUBSEP target
+        lst = (rk in alias_rev) ? alias_rev[rk] : " "
+        if (index(lst, " " parent " ") == 0 && split(lst, tmp, " ") < 16) lst = lst parent " "
+        alias_rev[rk] = lst
+    }
+    function expire_maps(t,   k) {
+        for (k in map_exp) if (map_exp[k] <= t) { delete map_exp[k]; delete map_host[k]; delete map_app[k]; delete map_groups[k]; delete map_client[k]; delete map_ip[k]; nmap--; dirty=1 }
+        for (k in alias_exp) if (alias_exp[k] <= t) alias_del(k)
+        for (k in req_time) if (req_time[k] + 30 <= t) { delete req_time[k]; delete req_name[k]; delete req_client[k]; delete req_type[k]; nreq-- }
+        for (k in tcp_pending_time) if (tcp_pending_time[k] + 30 <= t) tcp_clear(k)
+    }
+    function put(client, ip, host, expiry,   k, existed, victim, minexp, app, gr) {
+        if (client == "" || ip == "" || host == "") return
+        ip = v6full(ip); client = v6full(client); k = client SUBSEP ip
+        # A fresh response with TTL 0 must not leave an older mapping for the
+        # same client/IP/query-name alive until the previous TTL. do not erase a
+        # different hostname that may legitimately share this CDN address.
+        if (expiry <= now) {
+            if ((k in map_exp) && map_host[k] == host) {
+                delete map_exp[k]; delete map_host[k]; delete map_app[k]
+                delete map_groups[k]; delete map_client[k]; delete map_ip[k]
+                nmap--; dirty=1
+            }
+            return
+        }
+        existed = (k in map_exp)
+        if (!existed && nmap >= MAXIP) {
+            expire_maps(now)
+            if (nmap >= MAXIP) {
+                minexp = 0
+                for (victim in map_exp) if (minexp == 0 || map_exp[victim] < minexp) minexp = map_exp[victim]
+                for (victim in map_exp) if (map_exp[victim] == minexp) { delete map_exp[victim]; delete map_host[victim]; delete map_app[victim]; delete map_groups[victim]; delete map_client[victim]; delete map_ip[victim]; nmap--; break }
+            }
+        }
+        if (RULES_OK) {
+            app = app_of(host); gr = groups_of(host)
+        } else if (existed && map_host[k] == host) {
+            # A failed/missing rule read is not a valid empty database. Preserve
+            # known-good classifications for an existing client/IP/host mapping.
+            app = map_app[k]; gr = map_groups[k]
+        } else {
+            app = ""; gr = ""
+        }
+        if (map_host[k] != host || map_app[k] != app || map_groups[k] != gr || map_exp[k] != expiry) dirty=1
+        if (!existed) nmap++
+        map_client[k]=client; map_ip[k]=ip; map_host[k]=host; map_app[k]=app; map_groups[k]=gr; map_exp[k]=expiry
+    }
+    function flush(   k, tmp) {
+        tmp = MAP ".tmp." TMPID
+        printf "" > tmp
+        for (k in map_exp) if (map_exp[k] > now)
+            printf "%s\t%s\t%s\t%s\t%.0f\t%s\n", map_client[k], map_ip[k], map_host[k], map_app[k], map_exp[k], map_groups[k] > tmp
+        close(tmp)
+        if (system("mv -f " tmp " " MAP) != 0) { dirty=1; return }
+        printf "%s.%d\n", VER0, ++nflush > (MAP ".ver")
+        close(MAP ".ver")
+        dirty = 0; lastflush = now
+    }
+    function handle_req(   i, nm, id, src, dst, k, typ, victim, oldest, tcpflow, proto) {
+        proto=dns_transport(); src=$3; dst=$5; sub(/:$/, "", dst)
+        if (src == "" || dst == "") return
+        for (i=1; i<=NF; i++) {
+            if ($i == "A?" || $i == "AAAA?" || $i == "HTTPS?" || $i == "SVCB?") {
+                if (i+1 > NF) return
+                nm=cleanname($(i+1)); if (!validname(nm)) return
+                typ=$i; sub(/\?$/, "", typ)
+                id=req_id(i)
+                if (id == "__tcp_no_id__") {
+                    tcpflow = src SUBSEP dst
+                    if (!(tcpflow in tcp_pending_count) && ntcp >= REQMAX) {
+                        victim=""; oldest=0
+                        for (k in tcp_pending_time) if (oldest==0 || tcp_pending_time[k]<oldest) { oldest=tcp_pending_time[k]; victim=k }
+                        if (victim != "") tcp_clear(victim)
+                    }
+                    if (!(tcpflow in tcp_pending_count)) {
+                        if (ntcp >= REQMAX) return
+                        ntcp++
+                        tcp_pending_count[tcpflow]=1
+                        tcp_pending_name[tcpflow]=nm
+                        tcp_pending_client[tcpflow]=endpoint_ip(src)
+                        tcp_pending_type[tcpflow]=typ
+                    } else {
+                        # With no visible DNS ID, a pipelined TCP connection can no longer
+                        # be joined safely. Count outstanding queries and skip these replies
+                        # instead of attaching an answer to the wrong hostname.
+                        tcp_pending_count[tcpflow]++
+                        tcp_pending_ambiguous[tcpflow]=1
+                        delete tcp_pending_name[tcpflow]
+                        delete tcp_pending_client[tcpflow]
+                        delete tcp_pending_type[tcpflow]
+                    }
+                    tcp_pending_time[tcpflow]=now
+                    return
+                }
+                if (id < 0) return
+                k=proto SUBSEP src SUBSEP dst SUBSEP id
+                if (!(k in req_time)) {
+                    if (nreq >= REQMAX) {
+                        victim=""; oldest=0
+                        for (victim in req_time) if (oldest==0 || req_time[victim]<oldest) oldest=req_time[victim]
+                        for (victim in req_time) if (req_time[victim]==oldest) { delete req_time[victim]; delete req_name[victim]; delete req_client[victim]; delete req_type[victim]; nreq--; break }
+                    }
+                    nreq++
+                }
+                req_name[k]=nm; req_client[k]=endpoint_ip(src); req_type[k]=typ; req_time[k]=now
+                return
+            }
+        }
+    }
+    function handle_resp(   cl, server, k, j, z, id, q, client, qtype, cn, nc, cname_target, cname_ttl, relevant, seen, cur, target, owner, edge_ttl, depth, x, typ, val, vv, parts, ni, h, adr, adttl, adowner, na, ttl, host, expiry, walk, walkexp, parent, ak, lim, arr_i, have_owner, tcpflow, proto, rk, np, plist, pk2) {
+        proto=dns_transport(); cl=$5; sub(/:$/, "", cl); server=$3; sub(/:$/, "", server)
+        id=resp_id()
+        q=""; client=endpoint_ip(cl); qtype=""; cttl=-1
+        if (id == "__tcp_no_id__") {
+            tcpflow = cl SUBSEP server
+            if (!(tcpflow in tcp_pending_count)) return
+            if (tcp_pending_ambiguous[tcpflow] || tcp_pending_count[tcpflow] != 1) {
+                tcp_pending_count[tcpflow]--
+                if (tcp_pending_count[tcpflow] <= 0) tcp_clear(tcpflow)
+                return
+            }
+            q=tcp_pending_name[tcpflow]
+            client=tcp_pending_client[tcpflow]
+            qtype=tcp_pending_type[tcpflow]
+            tcp_clear(tcpflow)
+        } else {
+            k=proto SUBSEP cl SUBSEP server SUBSEP id
+            if (k in req_time) { q=req_name[k]; client=req_client[k]; qtype=req_type[k]; delete req_time[k]; delete req_name[k]; delete req_client[k]; delete req_type[k]; nreq-- }
+        }
+        if (client == "") return
+        cn=""; nc=0; na=0
+        split("", cname_target); split("", cname_ttl)
+        split("", relevant); split("", seen); split("", adr); split("", adttl); split("", adowner)
+
+        # First pass: collect only named alias links. CNAMEs in the additional
+        # section must not be treated as a chain unless their owner is reachable
+        # from the question name. Store links by owner, not by packet order.
+        for (j=1; j<=NF; j++) {
+            if ($j == "CNAME") {
+                owner=rr_owner(j); x=""
+                for (z=j+1; z<=NF && z<=j+4; z++) {
+                    if (isrr($z)) break
+                    x=$(z)
+                    if (x !~ /^\(/ && x !~ /^[0-9]+\)$/ && x != "IN") break
+                }
+                x=cleanname(x)
+                if (validname(x)) {
+                    nc++; cn=x
+                    if (owner == "" && q != "" && nc == 1) owner=q
+                    if (owner != "" && !(owner in cname_target)) { cname_target[owner]=x; cname_ttl[owner]=rrttl(j) }
+                }
+            } else if ($j == "HTTPS" || $j == "SVCB") {
+                if (qtype != "" && qtype != "HTTPS" && qtype != "SVCB") continue
+                owner=rr_owner(j); ttl=rrttl(j)
+                if (j+2<=NF && $(j+1) ~ /^[0-9]+$/ && $(j+1)+0==0) {
+                    x=cleanname($(j+2))
+                    if (validname(x) && x!=".") {
+                        nc++; cn=x
+                        if (owner == "" && q != "" && nc == 1) owner=q
+                        if (owner != "" && !(owner in cname_target)) { cname_target[owner]=x; cname_ttl[owner]=ttl }
+                    }
+                }
+            }
+        }
+
+        # Build the relevant owner set by following the query CNAME/SVCB
+        # chain. A/AAAA records for unrelated owners (additional/glue records)
+        # are not allowed to teach this query host-to-IP mapping.
+        cur = (q != "" ? q : cn)
+        if (cur != "") {
+            relevant[cur]=1; seen[cur]=1; depth=0
+            while (depth < 8 && (cur in cname_target)) {
+                target=cname_target[cur]
+                if (target == "" || target in seen) break
+                edge_ttl=cname_ttl[cur]; if (edge_ttl < 0) edge_ttl=60; if (edge_ttl > 3600) edge_ttl=3600
+                if (cttl < 0 || edge_ttl < cttl) cttl=edge_ttl
+                ak=client SUBSEP cur
+                if (edge_ttl > 0) alias_set(client, cur, target, now+edge_ttl)
+                else alias_del(ak)
+                relevant[target]=1; seen[target]=1; cur=target; depth++
+            }
+        }
+
+        # Second pass: retain only addresses whose RR owner is the queried name
+        # or a target in its alias chain. The record owner is the token before
+        # TTL IN TYPE in normal tcpdump output; if a tcpdump variant omits all
+        # owners, keep the bounded legacy fallback rather than dropping every map.
+        for (j=1; j<=NF; j++) {
+            if ($j == "A" || $j == "AAAA") {
+                typ=$j
+                if ((qtype == "A" && typ != "A") || (qtype == "AAAA" && typ != "AAAA")) continue
+                ttl=rrttl(j); x=""; owner=rr_owner(j)
+                for (z=j+1; z<=NF && z<=j+5; z++) {
+                    if (z>j+1 && isrr($z)) break
+                    vv=$(z); gsub(/[;,]$/, "", vv)
+                    if ((typ=="A" && valid4(vv)) || (typ=="AAAA" && valid6(tolower(vv)))) { x=tolower(vv); break }
+                }
+                if (x != "") { na++; adr[na]=x; adttl[na]=ttl; adowner[na]=owner }
+            } else if ($j == "HTTPS" || $j == "SVCB") {
+                if (qtype != "" && qtype != "HTTPS" && qtype != "SVCB") continue
+                owner=rr_owner(j); ttl=rrttl(j)
+                # HTTPS/SVCB ipv4hint and ipv6hint are hints, not ordinary A/AAAA RRs.
+                # Accept tcpdump key=value and key value renderings, tied to this RR owner.
+                for (z=j+1; z<=NF && z<=j+16; z++) {
+                    if (z>j+1 && isrr($z)) break
+                    val=$(z)
+                    if (val ~ /ipv4hint=/) { sub(/^.*ipv4hint=/,"",val); gsub(/[()";]/,"",val); ni=split(val,parts,","); for(h=1;h<=ni;h++) if(valid4(parts[h])) { na++; adr[na]=parts[h]; adttl[na]=ttl; adowner[na]=owner } }
+                    else if (val ~ /ipv6hint=/) { sub(/^.*ipv6hint=/,"",val); gsub(/[()";]/,"",val); ni=split(val,parts,","); for(h=1;h<=ni;h++) if(valid6(tolower(parts[h]))) { na++; adr[na]=tolower(parts[h]); adttl[na]=ttl; adowner[na]=owner } }
+                    else if (val == "ipv4hint" || val == "ipv6hint") {
+                        vv=$(z+1); gsub(/[()";]/,"",vv); ni=split(vv,parts,",")
+                        for(h=1;h<=ni;h++) if ((val=="ipv4hint" && valid4(parts[h])) || (val=="ipv6hint" && valid6(tolower(parts[h])))) { na++; adr[na]=tolower(parts[h]); adttl[na]=ttl; adowner[na]=owner }
+                    }
+                }
+            }
+        }
+
+        host=q; if (host=="" && cn!="") host=cn
+        if (host=="" || na==0) return
+        have_owner=0
+        for (arr_i=1; arr_i<=na; arr_i++) if (adowner[arr_i] != "") have_owner=1
+        for (j=1; j<=na; j++) {
+            owner=adowner[j]
+            if (owner != "" && !(owner in relevant)) continue
+            if (owner == "" && have_owner) continue
+            ttl=adttl[j]; if (ttl<0) ttl=60; if (ttl>86400) ttl=86400
+            # A queried alias cannot outlive any link in the chain that justified
+            # its target address.
+            if (cttl>=0 && ttl>cttl) ttl=cttl
+            expiry=now+ttl
+            # Let put() process TTL 0 too: it clears only an older entry for the
+            # same queried hostname and client/IP. It never caches the zero-TTL RR.
+            put(client, adr[j], host, expiry)
+            if (expiry > now) {
+                # Reverse alias propagation remains client-scoped and bounded.
+                walk[1]=host; walkexp[1]=expiry; depth=1
+                split("", seen)
+                for (z=1; z<=depth && z<=8; z++) {
+                    rk = client SUBSEP walk[z]
+                    if (!(rk in alias_rev)) continue
+                    np = split(alias_rev[rk], plist, " ")
+                    for (pk2=1; pk2<=np; pk2++) {
+                        parent=plist[pk2]; ak=client SUBSEP parent
+                        if ((ak in alias_exp) && alias_target[ak]==walk[z] && alias_exp[ak]>now && !(parent in seen)) {
+                            seen[parent]=1; depth++; walk[depth]=parent
+                            lim=walkexp[z]; if (alias_exp[ak]<lim) lim=alias_exp[ak]
+                            walkexp[depth]=lim
+                            if (lim>now) put(client, adr[j], parent, lim)
+                        }
+                    }
+                }
+                split("", walk); split("", walkexp)
+            }
+        }
+    }
+
+    BEGIN {
+        "date +%s" | getline ep; close("date +%s")
+        VER0 = ep "." TMPID
+        MAXIP = 8192; REQMAX = 4096; nmap=0; nreq=0; ntcp=0
+        # Only the groups selected as warning groups are kept in RAM (the full
+        # v2fly list needs ~20 MB in awk); rows without an application label
+        # and without a selected group are not stored at all.
+        na = split(ALERT_GROUPS, ag, /[ ,\t\n]+/)
+        for (i = 1; i <= na; i++) if (ag[i] != "") wantg[ag[i]] = 1
+        rules_read = 0
+        nkw = 0; nkwg = 0; nrx = 0; nac = 0; nalias = 0; ALIASMAX = 8192
+        while ((rules_read = (getline l < RULES)) > 0) {
+            if (l ~ /^[ \t]*#/ || l == "") continue
+            n = split(l, rf, "\t")
+            if (n < 2 || rf[1] == "") continue
+            rkey = tolower(rf[1])
+            if (rf[2] != "") {
+                # keyword rules (~) live in their own short list: they are scanned for every
+                # name, so they must not be searched for inside the big suffix table
+                if (substr(rkey, 1, 1) == "~") { kwt[++nkw] = substr(rkey, 2); kwa[nkw] = rf[2] }
+                else rule[rkey] = rf[2]
+            }
+            if (n >= 3 && rf[3] != "") {
+                ng = split(rf[3], gp, ","); keep = ""
+                for (j = 1; j <= ng; j++) if (gp[j] in wantg) keep = keep (keep == "" ? "" : ",") gp[j]
+                if (keep != "") {
+                    if (substr(rkey, 1, 1) == "~") { gkt[++nkwg] = substr(rkey, 2); gkg[nkwg] = keep }
+                    else if (substr(rkey, 1, 2) == "r:") { grt[++nrx] = substr(rkey, 3); grg[nrx] = keep }
+                    else groups[rkey] = keep
+                }
+            }
+        }
+        rules_close = close(RULES)
+        RULES_OK = (rules_read >= 0 && rules_close == 0)
+        if (!RULES_OK) { split("", rule); split("", groups); nkw = 0; nkwg = 0; nrx = 0 }
+
+        # dns.map is the on-disk snapshot of still-live DNS answers. Restore it
+        # before reading new packets: otherwise the first post-restart answer
+        # flushes a map containing only newly observed entries and silently drops
+        # every other answer whose TTL has not expired yet.
+        now = ep + 0
+        while ((getline l < MAP) > 0) {
+            n = split(l, rf, "\t")
+            if (n < 5) { dirty = 1; continue }
+            client = rf[1]; ip = rf[2]; host = rf[3]; expiry = rf[5] + 0
+            if (client == "" || ip == "" || host == "" || expiry <= now) { dirty = 1; continue }
+            key = client SUBSEP ip
+            if (RULES_OK) {
+                app = app_of(host); gr = groups_of(host)
+                # Rule updates restart this observer. Recompute classifications from the
+                # new rules and publish them even if no DNS packet arrives after restart.
+                if (app != rf[4] || gr != (n >= 6 ? rf[6] : "")) dirty = 1
+            } else {
+                # Retain saved classification when the rule database could not be read.
+                app = rf[4]; gr = (n >= 6 ? rf[6] : "")
+            }
+            if (key in map_exp) dirty = 1
+            else nmap++
+            map_client[key] = client; map_ip[key] = ip; map_host[key] = host
+            map_app[key] = app; map_groups[key] = gr; map_exp[key] = expiry
+        }
+        close(MAP)
+    }
+    # tcpdump -vvv does not print one line per packet. IPv4: "ts IP (tos ...)" and the addresses in the NEXT
+    # (indented) line; IPv6: "ts IP6 (hlim ...) src > dst: ...". Responses carry "[udp sum ok]", "q: A? name." in
+    # front of the answer counts and TTLs as "[1h30m]". norm() turns all of that into the compact one-line form
+    # the handlers below read: "ts IP src > dst: ID N/N/N owner SECONDS IN TYPE rdata, ..." (and does nothing to
+    # output that already has this form).
+    function ttl_secs(t,   n, u, s2) {
+        s2 = 0
+        while (match(t, /^[0-9]+[wdhms]/)) {
+            n = substr(t, 1, RLENGTH - 1) + 0; u = substr(t, RLENGTH, 1); t = substr(t, RLENGTH + 1)
+            s2 += n * ((u == "w") ? 604800 : (u == "d") ? 86400 : (u == "h") ? 3600 : (u == "m") ? 60 : 1)
+        }
+        return s2
+    }
+    function norm(   i, t) {
+        if (($2 == "IP" || $2 == "IP6") && $3 ~ /^\(/) {
+            if (index($0, " > ") == 0) { pend = $1 " " $2; return 0 }          # IPv4: header only, addresses follow
+            if (match($0, /\) [^ ]+ > /)) $0 = $1 " " $2 " " substr($0, RSTART + 2)   # IPv6: header in front
+        } else if (pend != "" && $2 == ">") { $0 = pend " " $0 }
+        pend = ""
+        gsub(/ \[(udp sum ok|bad udp cksum[^]]*)\]/, "")
+        sub(/ q: [A-Za-z0-9]+\? [^ ]+/, "")
+        for (i = 1; i <= NF; i++)
+            if ($i ~ /^\[[0-9]+[wdhms]([0-9]+[wdhms])*\]$/) { t = $i; gsub(/[][]/, "", t); $i = ttl_secs(t) " IN" }
+        $0 = $0
+        return 1
+    }
+    {
+        if (!norm()) next
+        now = $1 + 0
+        if (now <= 0) { "date +%s" | getline now; close("date +%s") }
+        if (next_expire_scan == 0 || now >= next_expire_scan) {
+            expire_maps(now)
+            next_expire_scan = now + 1
+        }
+        if ($2 == "IP" || $2 == "IP6") {
+            if ($3 ~ /\.53$/) handle_resp()
+            else if ($5 ~ /\.53:?$/) handle_req()
+        }
+        if (dirty && (now - lastflush >= FLUSH_S || now < lastflush)) flush()
+    }
+    END { if (dirty) { "date +%s" | getline now; close("date +%s"); flush() } }
+    '
+}
+
+if [ "$ONCE" = "1" ]; then
+    run_reader
+    exit 0
+fi
+
+# tcpdump and the reader are separate background jobs joined by a fifo (not "tcpdump | awk"),
+# so a TERM from procd can kill both (same reasoning as trafficchart-apps).
+# -p: no promiscuous mode (traffic to / through the router reaches the bridge device anyway)
+FIFO="$OUT_DIR/dns.$$.fifo"
+SPID=""; RPID=""
+cleanup() {
+    trap - TERM INT HUP EXIT
+    [ -n "$RPID" ] && kill "$RPID" 2>/dev/null
+    [ -n "$SPID" ] && kill "$SPID" 2>/dev/null
+    rm -f "$FIFO"
+    exit 0
+}
+trap cleanup TERM INT HUP EXIT
+
+while true; do
+    if [ -e "${SYSNET:-/sys/class/net}/$DNS_IFACE" ]; then
+        rm -f "$FIFO"
+        if mkfifo "$FIFO" 2>/dev/null; then
+            $TCPDUMP -i "$DNS_IFACE" -p -n -l -tt -vvv -s 1500 'udp port 53 or tcp port 53' 2>/dev/null > "$FIFO" &
+            SPID=$!
+            run_reader < "$FIFO" &
+            RPID=$!
+            wait "$RPID"
+            kill "$SPID" 2>/dev/null
+            SPID=""; RPID=""
+        else
+            $TCPDUMP -i "$DNS_IFACE" -p -n -l -tt -vvv -s 1500 'udp port 53 or tcp port 53' 2>/dev/null | run_reader
+        fi
+    else
+        logger -t trafficchart "dns_iface '$DNS_IFACE' does not exist - waiting"
+    fi
+    sleep 5 &
+    wait $!
+done

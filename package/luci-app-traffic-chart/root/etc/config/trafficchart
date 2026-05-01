@@ -1,0 +1,25 @@
+config trafficchart 'global'
+	option enabled '1'
+	option apps '1'
+	option dns_names '1'
+	option dns_iface 'br-lan'
+	option backend 'auto'
+	option attr_totals '1'
+	option attr_topapps '0'
+	# nss-rk.qos classifier (restart SQM after changing)
+	option bulk_bytes '314572800'
+	option reset_ct_marks '1'
+	option dns_redirect '0'
+	option ttl_fix '0'
+	# history storage per resolution (internal flash: /etc/trafficchart-data, SD card: /mnt/...)
+	#option persist_dir '/mnt/sda1/trafficchart'
+	#option persist_dir_5m ''
+	#option persist_dir_1h ''
+	#option persist_dir_1d '/etc/trafficchart-data'
+	option domain_auto_update '1'
+	option domain_update_days '7'
+
+	# V2Fly category groups that trigger history warning markers
+	option alert_groups 'category-porn'
+	# Optional legacy application-name matching. Plain terms are substring matches; * and ? are wildcards.
+	option alert_keywords ''

@@ -1,0 +1,366 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# trafficchart-hosts - LAN device identity for trafficchart-agg
+#
+# Prints tab separated lines:
+#   I <ip> <mac>     every neighbour (ARP / IPv6 ND) with a link-layer address;
+#                    IPv6 fully expanded like /proc/net/nf_conntrack prints it; also the
+#                    addresses of static "config domain" entries that belong to a static host
+#   N <mac> <name>   best known host name for a MAC (DHCP leases first, static
+#                    "config host" entries from /etc/config/dhcp override)
+#
+#   R <ip>           every address owned by the router itself (all interfaces),
+#                    IPv6 fully expanded. Lets the aggregator tell router-originated
+#                    and LAN->router traffic apart from ordinary forwarded flows.
+#
+# Devices are identified by MAC, not IP, so a host's IPv4 address and all its
+# (privacy) IPv6 addresses end up in ONE device.
+#
+# Active re-resolution: trafficchart-agg writes OUT_DIR/unresolved_v6 with LAN
+# IPv6 addresses it has seen carrying traffic but which have no neighbour
+# entry (typical under NSS hardware offload: once a flow is fast-pathed its
+# packets stop reaching the kernel, so IPv6 NUD never sees confirming traffic,
+# ages the entry out, and it drops from "ip neigh show" even though the
+# device is still actively sending). Pinging each address here forces the
+# kernel to run Neighbour Discovery again, so the "ip neigh show" below has a
+# fresh entry for it.
+OUT_DIR="${OUT_DIR:-/var/run/trafficchart}"
+UNRESOLVED_FILE="${UNRESOLVED_FILE:-$OUT_DIR/unresolved_v6}"
+IP_STATUS=0
+
+# At most UNRESOLVED_MAX pings run in the background per call (once per host refresh of the
+# aggregator); addresses that stay unresolved simply keep showing up keyed by their IPv6 address.
+UNRESOLVED_MAX=32
+
+if [ -s "$UNRESOLVED_FILE" ]; then
+    PING6=""
+    if command -v ping6 >/dev/null 2>&1; then
+        PING6="ping6 -c1 -W1 -q"
+    elif ping -6 -c1 -W1 -q ::1 >/dev/null 2>&1; then
+        PING6="ping -6 -c1 -W1 -q"
+    fi
+    if [ -n "$PING6" ]; then
+        # the jobs live in the subshell of the pipeline, so the wait has to be
+        # in that same subshell (a wait after the pipeline waits for nothing)
+        awk -v max="$UNRESOLVED_MAX" '!seen[$0]++ { print; if (++n >= max) exit }' "$UNRESOLVED_FILE" | {
+            while IFS= read -r addr; do
+                [ -n "$addr" ] || continue
+                $PING6 "$addr" >/dev/null 2>&1 &
+            done
+            wait
+        }
+    fi
+fi
+
+# The lease file includes an expiry epoch, client address and hardware address.
+# Keep the defaults unchanged in production; the variables allow deterministic host-side tests.
+DHCP_LEASE_FILE="${DHCP_LEASE_FILE:-/tmp/dhcp.leases}"
+DHCP_NOW="${DHCP_NOW:-$(date +%s)}"
+[ -r "$DHCP_LEASE_FILE" ] || DHCP_LEASE_FILE=""
+
+NEIGH_OUTPUT=$(ip neigh show 2>/dev/null) || IP_STATUS=1
+printf '%s\n' "$NEIGH_OUTPUT" | awk -v lease_file="$DHCP_LEASE_FILE" -v now="$DHCP_NOW" '
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss, ip, oct, tail) {
+        if (index(a, ":") == 0) return a
+        # inet_ntop-style IPv6 text can include a dotted-decimal IPv4 tail; convert it to two hextets before expansion.
+        if (a ~ /\./) {
+            ip = a
+            if (ip !~ /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return tolower(a)
+            sub(/^.*:/, "", ip)
+            if (split(ip, oct, ".") != 4) return tolower(a)
+            for (i = 1; i <= 4; i++) if (oct[i] !~ /^[0-9]+$/ || oct[i] + 0 > 255) return tolower(a)
+            tail = sprintf("%x:%x", (oct[1] + 0) * 256 + (oct[2] + 0), (oct[3] + 0) * 256 + (oct[4] + 0))
+            sub(/[^:]*$/, tail, a)
+        }
+        a = tolower(a)
+        if (a ~ /:::/) return a
+        n = split(a, h, "::")
+        if (n > 2) return a
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return tolower(a)
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++) { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    BEGIN {
+        # Current dnsmasq leases are authoritative IP/MAC fallbacks when ARP/NDP
+        # has no row yet. Expired rows must not keep a stale name or claim a reused IP.
+        if (lease_file != "") {
+            while ((getline lease_line < lease_file) > 0) {
+                nlease = split(lease_line, lease_fields, /[ \t]+/)
+                expiry = lease_fields[1] + 0
+                lease_mac = tolower(lease_fields[2])
+                lease_ip = lease_fields[3]
+                lease_name = lease_fields[4]
+                if (nlease < 4 || lease_fields[1] !~ /^[0-9]+$/) continue
+                if (expiry != 0 && expiry <= now + 0) continue
+                if (lease_mac == "" || lease_mac == "*" || lease_ip == "" || lease_ip == "*") continue
+                # DHCPv6 client identifiers can be DUIDs, not link-layer MAC keys.
+                # Only a six-octet hardware address can directly join hmac/dev_key.
+                if (lease_mac ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/)
+                    print "I\t" v6full(lease_ip) "\t" lease_mac
+                if (lease_name != "" && lease_name != "*") print "N\t" lease_mac "\t" lease_name
+            }
+            close(lease_file)
+        }
+    }
+    {
+        mac = ""
+        for (i = 2; i < NF; i++) if ($i == "lladdr") mac = tolower($(i + 1))
+        if (mac != "") print "I\t" v6full($1) "\t" mac
+    }'
+
+ADDR_OUTPUT=$(ip -o addr show 2>/dev/null) || IP_STATUS=1
+printf '%s\n' "$ADDR_OUTPUT" | awk '
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss, ip, oct, tail) {
+        if (index(a, ":") == 0) return a
+        # inet_ntop-style IPv6 text can include a dotted-decimal IPv4 tail; convert it to two hextets before expansion.
+        if (a ~ /\./) {
+            ip = a
+            if (ip !~ /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return tolower(a)
+            sub(/^.*:/, "", ip)
+            if (split(ip, oct, ".") != 4) return tolower(a)
+            for (i = 1; i <= 4; i++) if (oct[i] !~ /^[0-9]+$/ || oct[i] + 0 > 255) return tolower(a)
+            tail = sprintf("%x:%x", (oct[1] + 0) * 256 + (oct[2] + 0), (oct[3] + 0) * 256 + (oct[4] + 0))
+            sub(/[^:]*$/, tail, a)
+        }
+        a = tolower(a)
+        if (a ~ /:::/) return a
+        n = split(a, h, "::")
+        if (n > 2) return a
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return tolower(a)
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++) { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    { for (i = 1; i < NF; i++) if ($i == "inet" || $i == "inet6") { a = $(i + 1); sub(/\/.*/, "", a); print "R\t" v6full(a) } }'
+
+# Read the DHCP configuration once so the host-name and static-domain passes
+# consume the same snapshot. Preserve the last known-good inventory if UCI fails;
+# the downstream AWK commands otherwise mask the originating exit status.
+if command -v uci >/dev/null 2>&1; then
+    UCI_OUTPUT=$(uci -q show dhcp 2>/dev/null) || IP_STATUS=1
+    printf '%s\n' "$UCI_OUTPUT" | awk -F"[.=]" '
+    { line = $0; sub(/^[^=]*=/, "", line); gsub(/\047/, "", line) }
+    $3 == "name" { name[$2] = line }
+    $3 == "mac" {
+        # UCI serializes `list mac` as several values on a line (or several
+        # repeated keys depending on version). Preserve every concrete address
+        # for the name map instead of silently retaining only the first one.
+        n = split(line, m, /[ \t,]+/)
+        for (i = 1; i <= n; i++) {
+            v = tolower(m[i])
+            if (v !~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/) continue
+            key = $2 SUBSEP v
+            if (!(key in mac_seen)) { mac_seen[key] = 1; mac[$2, ++nmac[$2]] = v }
+        }
+    }
+    END { for (s in nmac) if (name[s] != "") for (i = 1; i <= nmac[s]; i++) print "N\t" mac[s, i] "\t" name[s] }'
+
+    printf '%s\n' "$UCI_OUTPUT" | awk '
+    function val(l,   v) { v = l; sub(/^[^=]*=/, "", v); gsub(/\047/, "", v); return v }
+    # Match the canonical IPv6 form used by conntrack and the neighbour-table reader.
+    # UCI static host/domain addresses may use compressed or fully expanded spellings.
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss, ip, oct, tail) {
+        if (index(a, ":") == 0) return a
+        # inet_ntop-style IPv6 text can include a dotted-decimal IPv4 tail; convert it to two hextets before expansion.
+        if (a ~ /\./) {
+            ip = a
+            if (ip !~ /:[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) return tolower(a)
+            sub(/^.*:/, "", ip)
+            if (split(ip, oct, ".") != 4) return tolower(a)
+            for (i = 1; i <= 4; i++) if (oct[i] !~ /^[0-9]+$/ || oct[i] + 0 > 255) return tolower(a)
+            tail = sprintf("%x:%x", (oct[1] + 0) * 256 + (oct[2] + 0), (oct[3] + 0) * 256 + (oct[4] + 0))
+            sub(/[^:]*$/, tail, a)
+        }
+        a = tolower(a)
+        if (a ~ /:::/) return a
+        n = split(a, h, "::")
+        if (n > 2) return a
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return tolower(a)
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++) { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    {
+        if (match($0, /^dhcp\.(@host\[[0-9]+\]|[A-Za-z0-9_-]+)=host$/)) {
+            sec = substr($0, 6, index($0, "=") - 6); kind[sec] = "host"; next
+        }
+        if (match($0, /^dhcp\.(@domain\[[0-9]+\]|[A-Za-z0-9_-]+)=domain$/)) {
+            sec = substr($0, 6, index($0, "=") - 6); kind[sec] = "domain"; next
+        }
+        if (match($0, /^dhcp\.(@dnsmasq\[[0-9]+\]|[A-Za-z0-9_-]+)=dnsmasq$/)) {
+            sec = substr($0, 6, index($0, "=") - 6); kind[sec] = "dnsmasq"; next
+        }
+        if (match($0, /^dhcp\.[^.]+\.domain=/)) {
+            sec = substr($0, 6, index($0, ".domain=") - 6)
+            if (kind[sec] == "dnsmasq") {
+                dnsdomain[sec] = tolower(val($0))
+                sub(/\.$/, "", dnsdomain[sec])
+            }
+            next
+        }
+        if (match($0, /^dhcp\.[^.]+\.ip=/)) {
+            sec = substr($0, 6, index($0, ".ip=") - 6)
+            v = val($0)
+            # UCI list options can occur on several lines; do not silently retain only the last IP.
+            ipval[sec] = (ipval[sec] == "" ? v : ipval[sec] " " v)
+            next
+        }
+        if (match($0, /^dhcp\.[^.]+\.mac=/)) {
+            sec = substr($0, 6, index($0, ".mac=") - 6)
+            # A UCI host may list several MACs for one DHCP reservation. Keep
+            # all concrete addresses for device labels, but never assign a
+            # shared static IP to an arbitrary first MAC: the active neighbour
+            # or lease row, when available, is the authoritative owner.
+            mac_text = tolower(val($0))
+            nmac = split(mac_text, mac_parts, /[ \t,]+/)
+            for (mi = 1; mi <= nmac; mi++) {
+                m = mac_parts[mi]
+                if (m !~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]$/) continue
+                mk = sec SUBSEP m
+                if (!(mk in hostmac_seen)) { hostmac_seen[mk] = 1; hostmacs[sec, ++hostmac_count[sec]] = m }
+            }
+            next
+        }
+        if (match($0, /^dhcp\.[^.]+\.name=/)) {
+            sec = substr($0, 6, index($0, ".name=") - 6); nameval[sec] = val($0); next
+        }
+    }
+    END {
+        for (s in kind) {
+            if (kind[s] != "host" || !(s in hostmac_count)) continue
+            # Multiple MACs on one DHCP host section may request the same
+            # address. The static configuration cannot tell which device owns
+            # it now; rely on live neighbours/leases rather than inventing the
+            # first configured MAC. Single-MAC static mappings remain intact.
+            if (s in ipval && hostmac_count[s] == 1) {
+                n = split(ipval[s], a, /[ \t]+/)
+                for (i = 1; i <= n; i++) if (a[i] != "") {
+                    addr = v6full(a[i]); m = hostmacs[s, 1]
+                    # Conflicting static host entries for one address have no
+                    # deterministic owner. Mark the address ambiguous instead
+                    # of letting AWK unordered array traversal choose a MAC.
+                    if (addr in hostamb) continue
+                    if (!(addr in hostmac)) {
+                        hostmac[addr] = m
+                    } else if (hostmac[addr] != m) {
+                        delete hostmac[addr]
+                        hostamb[addr] = 1
+                    }
+                }
+            }
+            if (s in nameval) {
+                nm = tolower(nameval[s])
+                for (mi = 1; mi <= hostmac_count[s]; mi++) {
+                    m = hostmacs[s, mi]
+                    if ((nm in namemac) && namemac[nm] != m) nameamb[nm] = 1
+                    else namemac[nm] = m
+                }
+            }
+        }
+        # A configured static host already provides an authoritative address-to-MAC
+        # mapping, even without a live neighbour-cache row or a separate config domain.
+        # hostamb entries were removed from hostmac above, so conflicting static owners
+        # remain intentionally unresolved instead of inheriting AWK array-order choices.
+        for (addr in hostmac) if (!(addr in hostamb) && hostmac[addr] != "")
+            print "I\t" addr "\t" hostmac[addr]
+
+        # Multiple dnsmasq instances can publish distinct local suffixes. Keep
+        # all of them; choosing the first element of an AWK hash made alias
+        # matching depend on array iteration order and could miss valid hosts.
+        ndomains = 0
+        for (s in kind) if (kind[s] == "dnsmasq" && dnsdomain[s] != "" && !(dnsdomain[s] in seen_domain)) {
+            seen_domain[dnsdomain[s]] = 1
+            domain_list[++ndomains] = dnsdomain[s]
+        }
+        for (s in kind) {
+            if (kind[s] != "domain" || !(s in ipval)) continue
+            n = split(ipval[s], a, /[ \t]+/)
+            fallback = ""
+            if (s in nameval) {
+                dn = tolower(nameval[s]); sub(/\.$/, "", dn)
+                # Prefer an exact match (also supports hosts whose configured name is
+                # already fully-qualified); then try the configured dnsmasq suffix.
+                if ((dn in namemac) && !(dn in nameamb)) fallback = namemac[dn]
+                if (fallback == "") {
+                    suffix_candidate = ""; suffix_conflict = 0
+                    for (di = 1; di <= ndomains; di++) {
+                        suffix = "." domain_list[di]
+                        if (length(dn) > length(suffix) && substr(dn, length(dn) - length(suffix) + 1) == suffix) {
+                            shortdn = substr(dn, 1, length(dn) - length(suffix))
+                            if ((shortdn in namemac) && !(shortdn in nameamb)) {
+                                if (suffix_candidate == "") suffix_candidate = namemac[shortdn]
+                                else if (suffix_candidate != namemac[shortdn]) suffix_conflict = 1
+                            }
+                        }
+                    }
+                    if (!suffix_conflict) fallback = suffix_candidate
+                    # Retain compatibility with legacy .lan aliases even if the
+                    # configured local search domains were changed.
+                    if (fallback == "" && length(dn) > 4 && substr(dn, length(dn) - 3) == ".lan") {
+                        shortdn = substr(dn, 1, length(dn) - 4)
+                        if ((shortdn in namemac) && !(shortdn in nameamb)) fallback = namemac[shortdn]
+                    }
+                }
+            }
+            # Prefer an address-specific static host match. Use the domain-name fallback
+            # only for addresses not explicitly attached to a different known host.
+            # Domain aliases can nevertheless advertise the same address while resolving
+            # to different host MACs. Do not print each candidate immediately: aggregate
+            # candidates first and suppress an address if its fallback ownership conflicts.
+            for (i = 1; i <= n; i++) {
+                addr = v6full(a[i])
+                if (addr == "") continue
+                if (addr in hostamb) {
+                    m = ""
+                } else if (addr in hostmac) {
+                    # The explicit static-host mapping is authoritative and was already
+                    # emitted above. Avoid letting a domain alias override or duplicate it.
+                    m = ""
+                } else {
+                    m = fallback
+                }
+                if (m == "") continue
+                if (addr in domainamb) continue
+                if (!(addr in domainmac)) {
+                    domainmac[addr] = m
+                } else if (domainmac[addr] != m) {
+                    delete domainmac[addr]
+                    domainamb[addr] = 1
+                }
+            }
+        }
+        # A domain address with more than one configured MAC candidate is ambiguous;
+        # preserve valid unique mappings but never let AWK hash iteration order decide
+        # which competing host receives traffic for a shared address.
+        for (addr in domainmac) {
+            if (!(addr in domainamb) && !(addr in hostamb) && domainmac[addr] != "" && !emitted[addr SUBSEP domainmac[addr]]++)
+                print "I\t" addr "\t" domainmac[addr]
+        }
+    }'
+fi
+exit "$IP_STATUS"
