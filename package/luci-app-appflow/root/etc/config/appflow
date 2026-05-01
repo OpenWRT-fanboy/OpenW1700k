@@ -1,0 +1,71 @@
+config appflow 'main'
+	# Netify Agent JSON export socket (netifyd.conf: [socket] listen_path[0]).
+	# netifyd 5.x serves it from the sink-socket plugin instead, at
+	# /var/run/netifyd/netify-sink.sock; with this left at the 4.4 default,
+	# appflowd uses that one automatically when it exists.
+	option socket_path '/var/run/netifyd/netifyd.sock'
+
+	# Maximum concurrently tracked flows. The flow table is the daemon's only
+	# significant memory consumer; 4096 flows is roughly 3 MB of state.
+	option flow_max '4096'
+
+	# Sliding window, in seconds, behind the reported rates. netifyd delivers
+	# per-flow counters about every 15 s, so values below ~20 s make the rates
+	# jump between burst and idle rather than making them more responsive.
+	option rate_window '30'
+
+	# Default number of rows returned by the summary method.
+	option top_n '10'
+
+	# Drop a flow from the table after this many seconds without an update.
+	option idle_timeout '300'
+
+	# Break AI services out as their own applications and category.
+	#
+	# netifyd cannot classify them: its signature set is dated August 2023 and
+	# contains no AI vendors at all, so this traffic arrives as generic HTTP/S.
+	# The TLS SNI is already in the flow record, so appflowd matches it against
+	# a built-in table of AI service domains and relabels the flow.
+	#
+	# This is HOSTNAME MATCHING, NOT DPI. It asserts a classification netifyd
+	# did not make. netifyd's own answer always wins except for a handful of
+	# services whose parent brand netifyd recognises (Gemini under Google,
+	# Copilot under GitHub), so this falls silent by itself if Netify ever ship
+	# AI signatures. It changes identity only and never affects byte accounting.
+	#
+	# 0 disables it entirely.
+	option ai_breakout '1'
+
+# ---------------------------------------------------------------------------
+# Teaching AppFlow a service it does not know
+# ---------------------------------------------------------------------------
+#
+# netifyd's signature set is vendor data and it goes stale; the copy shipped
+# with OpenWrt is dated August 2023. AppFlow recognises a built-in list of
+# services by the server name their TLS connections announce, and a `hostmap`
+# section adds to that list or overrides it.
+#
+# Each section teaches one domain suffix:
+#
+#	config hostmap
+#		option suffix 'torproject.org'
+#		option name 'Tor'
+#		option category 'Privacy'
+#
+# suffix    matched against the last two, three or four labels of the server
+#           name, anchored on a label boundary. 'torproject.org' matches
+#           'www.torproject.org' and 'check.torproject.org' but NOT
+#           'torproject.org.example.com'. Must contain a dot.
+# name      what appears in the application list.
+# category  what appears in the category breakdown. Free text; reuse an
+#           existing one to group with it, or invent your own.
+# strong    optional, default 0. 0 means netifyd's own identification wins
+#           where it has one, and this only fills a gap. 1 means override
+#           netifyd too, which is what you want when netifyd recognises a
+#           parent brand and swallows the service inside it.
+#
+# Apply with: /etc/init.d/appflowd restart
+# Check it took: logread -e appflowd | grep hostmap
+#
+# The same section overrides a built-in entry, so this is also how you correct
+# one that is wrong for your network.

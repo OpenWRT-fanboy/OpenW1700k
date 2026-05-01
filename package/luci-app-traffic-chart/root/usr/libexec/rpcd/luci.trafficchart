@@ -1,0 +1,297 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# luci.trafficchart - rpcd plugin: serves what the trafficchart-agg daemon wrote.
+#
+# The daemon (procd service "trafficchart") walks /proc/net/nf_conntrack and reads the qdisc
+# counters; it writes everything the page needs to /var/run/trafficchart/classes.json (live data)
+# and history*.json (history). This script only hands those files to the page, so its cost is
+# independent of how many browser tabs are open. It computes nothing itself.
+OUT_DIR="${TC_OUT_DIR:-/var/run/trafficchart}"
+AGG_FILE="$OUT_DIR/classes.json"
+AGG_MAX_AGE=10          # seconds; at least two daemon intervals + 5 s are always allowed
+HIST_MAX_BYTES=980000   # never more than this many bytes (rpcd/ubus reply limit is 1 MB)
+HIST_MAX=800            # never return more buckets than this (744 hourly buckets = 31 days)
+
+
+case "$1" in
+    list)
+        # "history" is an optional parameter of get_stats (rather than a second
+        # method) so no rpcd ACL change is needed for it. "tier" (5m | 1h | 1d)
+        # selects the resolution, "n" limits the answer to the newest n buckets,
+        # "dim" (a | d | h) returns only that dimension per bucket. "skip" leaves out the newest
+        # <skip> buckets first (the page fetches a long range in small chunks). Every RPC method
+        # must be declared here; otherwise LuCI cannot call update_domains.
+        echo '{"get_stats": {"history": 1, "tier": "5m", "n": 1, "dim": "a", "skip": 1}, "get_domain_status": {}, "get_domain_groups": {}, "update_domains": {}, "restart": {}, "reset_history": {}}'
+        ;;
+    call)
+        # rpcd exec protocol passes the method name as $2; "restart" and
+        # "reset_history" both need the write ACL (luci-app-traffic-chart-admin),
+        # get_stats only needs read.
+        if [ "$2" = "get_domain_groups" ]; then
+            GROUPS=/etc/trafficchart-domain-groups
+            if [ ! -r "$GROUPS" ]; then
+                echo '{"groups":[],"available":false}'
+                exit 0
+            fi
+            # Category names are restricted to a-z, 0-9 and hyphens by the updater.
+            groups=$(awk 'NF && /^category-[a-z0-9-]+$/ { print $0 }' "$GROUPS" | sort -u | awk '{ printf "%s\"%s\"", (n++ ? "," : ""), $0 } END { print "" }')
+            printf '{"groups":[%s],"available":true}\n' "$groups"
+            exit 0
+        fi
+
+        if [ "$2" = "get_domain_status" ]; then
+            STATE=/etc/trafficchart-domains.state
+            json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g'; }
+            getv() { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n1; }
+            if [ ! -r "$STATE" ]; then
+                echo '{"status":"NOT UPDATED","message":"No update has completed yet.","rules":0,"previous_rules":0,"changed":"no","last_attempt":0,"last_success":0}'
+                exit 0
+            fi
+            status=$(getv status); message=$(getv message); rules=$(getv rules); previous=$(getv previous_rules); changed=$(getv changed); attempt=$(getv last_attempt); success=$(getv last_success); attempt_text=$(getv last_attempt_text); success_text=$(getv last_success_text)
+            case "$rules" in ''|*[!0-9]*) rules=0;; esac
+            case "$previous" in ''|*[!0-9]*) previous=0;; esac
+            case "$attempt" in ''|*[!0-9]*) attempt=0;; esac
+            case "$success" in ''|*[!0-9]*) success=0;; esac
+            status_json=$(json_escape "$status")
+            message_json=$(json_escape "$message")
+            changed_json=$(json_escape "$changed")
+            attempt_text_json=$(json_escape "$attempt_text")
+            success_text_json=$(json_escape "$success_text")
+            printf '{"status":"%s","message":"%s","rules":%s,"previous_rules":%s,"changed":"%s","last_attempt":%s,"last_attempt_text":"%s","last_success":%s,"last_success_text":"%s"}\n' \
+                "$status_json" "$message_json" "$rules" "$previous" "$changed_json" "$attempt" "$attempt_text_json" "$success" "$success_text_json"
+            exit 0
+        fi
+
+        if [ "$2" = "restart" ]; then
+            # detached: the init script stopping this very rpcd child must not
+            # block the ubus reply
+            ( /etc/init.d/trafficchart restart >/dev/null 2>&1 & )
+            echo '{"result": "restarting"}'
+            exit 0
+        fi
+
+        if [ "$2" = "update_domains" ]; then
+            # The updater is a root process; do not redirect its output to /tmp,
+            # where a pre-created symlink could turn the redirection into a root write.
+            umask 077
+            if ! mkdir -p /var/run/trafficchart 2>/dev/null || ! chmod 700 /var/run/trafficchart 2>/dev/null; then
+                echo '{"error":"cannot prepare updater runtime directory"}'
+                exit 1
+            fi
+            ( /usr/libexec/trafficchart-domains-update >/var/run/trafficchart/domains-update.log 2>&1 & )
+            echo '{"result": "domain update started"}'
+            exit 0
+        fi
+
+        if [ "$2" = "reset_history" ]; then
+            # Distinct from "restart": this only asks the RUNNING daemon to
+            # clear its cumulative application/device/destination totals and
+            # its in-RAM history (all three tiers), then keep going - no procd
+            # bounce, no re-attaching of persistence targets, live flow
+            # tracking (and therefore the "top flows" list) is unaffected.
+            # trafficchart-agg polls for this file once per loop iteration
+            # (same mechanism as its stop.req) and removes it once handled.
+            # Buckets already written to a persistent storage path are left
+            # alone (only the RAM/UI view is cleared) - delete those files
+            # yourself if you also want the on-disk archive gone.
+            umask 077
+            # This is a request to the currently running daemon, not a persistent
+            # command to be replayed by a future procd generation. Validate the PID
+            # file and the process identity before publishing the request.
+            AGG_PID=$(cat "$OUT_DIR/agg.pid" 2>/dev/null || true)
+            case "$AGG_PID" in ''|*[!0-9]*) AGG_PID="" ;; esac
+            if [ -z "$AGG_PID" ] || ! kill -0 "$AGG_PID" 2>/dev/null ||
+               ! grep -q 'trafficchart-agg' "/proc/$AGG_PID/cmdline" 2>/dev/null; then
+                echo '{"error":"aggregator is not running"}'
+                exit 1
+            fi
+            if ! mkdir -p "$OUT_DIR" 2>/dev/null; then
+                echo '{"error":"cannot create runtime directory"}'
+                exit 1
+            fi
+            if ! chmod 700 "$OUT_DIR" 2>/dev/null; then
+                echo '{"error":"cannot set runtime directory permissions"}'
+                exit 1
+            fi
+            ACK_FILE="${OUT_DIR}/reset.ack"
+            # The acknowledgement must identify THIS request. A shared integer
+            # counter can advance for another caller between our baseline read
+            # and request write, causing this RPC to report success while its own
+            # reset is still queued. PID + epoch gives every concurrent caller a
+            # distinct token; the daemon echoes the consumed token after clearing.
+            request_id="${AGG_PID}.$$.$(date +%s)"
+            # Fully write a private temporary file first, then publish it by an
+            # atomic hard-link. The aggregator must never observe reset.req between
+            # pathname creation and token write, and concurrent callers must not
+            # overwrite a pending request. The temp file is in OUT_DIR so the link
+            # is on the same (normally tmpfs) filesystem.
+            request_tmp=$(mktemp "${OUT_DIR}/reset.req.XXXXXX") || {
+                echo '{"error":"cannot prepare reset request"}'
+                exit 1
+            }
+            if ! printf '%s\n' "$request_id" > "$request_tmp"; then
+                rm -f "$request_tmp"
+                echo '{"error":"cannot write reset request"}'
+                exit 1
+            fi
+            if [ -e "${OUT_DIR}/reset.req" ] || [ -L "${OUT_DIR}/reset.req" ] ||
+               ! ln "$request_tmp" "${OUT_DIR}/reset.req" 2>/dev/null; then
+                rm -f "$request_tmp"
+                echo '{"error":"another reset request is already pending"}'
+                exit 1
+            fi
+            rm -f "$request_tmp"
+            # Do not tell the browser the reset has completed until the daemon has
+            # actually cleared its totals/history. Its next poll can be as late as
+            # INTERVAL_MAX (20 seconds), so allow a little margin.
+            waited=0
+            while [ "$waited" -lt 24 ]; do
+                after=$(cat "$ACK_FILE" 2>/dev/null || true)
+                if [ "$after" = "$request_id" ]; then
+                    echo '{"result":"reset complete"}'
+                    exit 0
+                fi
+                sleep 1
+                waited=$((waited + 1))
+            done
+            # If the daemon was blocked before reading our request, cancel it.
+            # Match the request token so a concurrent caller's newer request is not removed.
+            queued=$(cat "${OUT_DIR}/reset.req" 2>/dev/null || true)
+            if [ "$queued" = "$request_id" ]; then rm -f "${OUT_DIR}/reset.req" 2>/dev/null; fi
+            echo '{"error":"reset request was written, but the aggregator did not confirm it within 24 seconds"}'
+            exit 1
+        fi
+
+        # optional parameters arrive as JSON on stdin (rpcd exec plugin)
+        PARAMS=""
+        [ -t 0 ] || PARAMS=$(cat 2>/dev/null)
+        case "$PARAMS" in
+            *'"history"'*)
+                # get_stats {"history":1,"tier":"1h","n":200} -> newest n buckets of that tier
+                TIER=$(echo "$PARAMS" | sed -n 's/.*"tier" *: *"\([a-z0-9]*\)".*/\1/p')
+                HN=$(echo "$PARAMS" | sed -n 's/.*"n" *: *\([0-9][0-9]*\).*/\1/p')
+                HS=$(echo "$PARAMS" | sed -n 's/.*"skip" *: *\([0-9][0-9]*\).*/\1/p')
+                # "dim" = only that dimension per bucket (keeps long ranges under the ubus limit)
+                DIM=$(echo "$PARAMS" | sed -n 's/.*"dim" *: *"\([adh]\)".*/\1/p')
+                case "$TIER" in
+                    1h) HIST_FILE="$OUT_DIR/history_1h.json" ;;
+                    1d) HIST_FILE="$OUT_DIR/history_1d.json" ;;
+                    *)  HIST_FILE="$OUT_DIR/history.json"; TIER=5m ;;
+                esac
+                case "$HN" in
+                    ''|*[!0-9]*) HN=$HIST_MAX ;;
+                    *)
+                        # Normalize leading zeroes, then compare only values
+                        # that fit within HIST_MAX's digit width. A syntactically
+                        # numeric but very long JSON integer can overflow ash's
+                        # test builtin before it reaches awk; in that case the
+                        # nominal 800-bucket cap was bypassed.
+                        while [ "${HN#0}" != "$HN" ]; do HN=${HN#0}; done
+                        [ -n "$HN" ] || HN=0
+                        if [ "$HN" = 0 ]; then
+                            HN=$HIST_MAX
+                        elif [ "${#HN}" -gt "${#HIST_MAX}" ]; then
+                            HN=$HIST_MAX
+                        elif [ "$HN" -gt "$HIST_MAX" ]; then
+                            HN=$HIST_MAX
+                        fi
+                        ;;
+                esac
+                case "$HS" in
+                    ''|*[!0-9]*) HS=0 ;;
+                    *)
+                        # Keep the cursor a finite, exact integer for both ash and awk.
+                        # An unbounded all-digit JSON number can overflow awk to infinity;
+                        # printf then emits `inf`, which is not valid JSON. Leading zeroes
+                        # are removed before the width check so ordinary numeric requests
+                        # retain their meaning.
+                        while [ "${HS#0}" != "$HS" ]; do HS=${HS#0}; done
+                        [ -n "$HS" ] || HS=0
+                        # A page offset larger than 9 digits cannot address a realistic
+                        # retained history. Bound it before any shell numeric comparison.
+                        [ "${#HS}" -le 9 ] || HS=999999999
+                        ;;
+                esac
+                if [ -r "$HIST_FILE" ]; then
+                    # file = JSON array, one bucket per line; keep the newest HN
+                    awk -v N="$HN" -v SKIP="$HS" -v TIER="$TIER" -v MAXB="$HIST_MAX_BYTES" -v DIM="$DIM" '
+                        # bucket layout: {"t":..,"dt":..,"in":..,"out":..,"a":{..},"d":{..},"h":{..},"sh":{..}}
+                        # cut by position of the section keys (quotes in names are sanitized, so
+                        # these markers cannot occur inside a name)
+                        /^\{/ {
+                            sub(/,$/, "")
+                            if (DIM != "") {
+                                pa = index($0, ",\"a\":{"); pd = index($0, ",\"d\":{")
+                                ph = index($0, ",\"h\":{"); ps = index($0, ",\"sh\":")
+                                if (pa > 0 && pd > pa && ph > pd && ps > ph) {
+                                    keep = (DIM == "a") ? substr($0, pa, pd - pa) : (DIM == "d") ? substr($0, pd, ph - pd) : substr($0, ph, ps - ph)
+                                    $0 = substr($0, 1, pa - 1) keep substr($0, ps)
+                                }
+                            }
+                            b[++c] = $0
+                        }
+                        END {
+                            s = c - SKIP - N + 1; if (s < 1) s = 1
+                            e = c - SKIP; if (e > c) e = c; if (e < 1) e = 0
+                            # Reserve space for the response envelope as well as the
+                            # comma/newline allowance counted with every bucket. Without
+                            # this, a near-limit page could exceed the ubus reply cap even
+                            # when all selected buckets were individually below MAXB.
+                            # Include the cursor field in the envelope reservation too.
+                            # nextSkip is returned on every page and can be up to nine digits,
+                            # so budgeting only the older envelope can exceed the RPC cap.
+                            MAXB -= length("{\"tier\":\"" TIER "\",\"nextSkip\":999999999,\"buckets\":[]}" )
+                            if (MAXB < 0) MAXB = 0
+                            tot = 0
+                            for (i = e; i >= s; i--) { tot += length(b[i]) + 1; if (tot > MAXB) { s = i + 1; break } }
+                            # Return a cursor based on the actual source index, not on
+                            # how many rows fit by byte count. The frontend must be able
+                            # to request the preceding page without overlap/gaps when a
+                            # normal page is trimmed to the byte budget. If even the
+                            # newest row cannot fit, skip exactly that row so pagination
+                            # can still reach older history instead of looping forever.
+                            if (e >= 1) {
+                                if (s <= e) nextskip = c - s + 1
+                                else nextskip = c - e + 1
+                            } else nextskip = SKIP
+                            printf "{\"tier\":\"%s\",\"nextSkip\":%.0f,\"buckets\":[", TIER, nextskip
+                            for (i = s; i <= e; i++) printf "%s%s", (i > s ? "," : ""), b[i]
+                            print "]}"
+                        }' "$HIST_FILE"
+                else
+                    echo '{"buckets":[]}'
+                fi
+                exit 0
+                ;;
+        esac
+
+        # --- live data: serve classes.json if the daemon wrote it recently ---
+        if [ ! -r "$AGG_FILE" ]; then
+            echo '{"error": "aggregator not running - /etc/init.d/trafficchart start"}'
+            exit 0
+        fi
+        AGG_JSON=$(cat "$AGG_FILE" 2>/dev/null)
+        if [ -z "$AGG_JSON" ]; then
+            echo '{"error": "aggregator file empty"}'
+            exit 0
+        fi
+        # freshness from the daemon's own uptime stamp ("up") against /proc/uptime, without forking
+        K_UP='"up":'; K_LOAD='"load":{'; K_IV='"interval":'
+        fp_t="${AGG_JSON#*"$K_UP"}"; fp_t="${fp_t%%,*}"; fp_t="${fp_t%.*}"
+        fp_iv="${AGG_JSON#*"$K_LOAD"}"; fp_iv="${fp_iv#*"$K_IV"}"; fp_iv="${fp_iv%%,*}"
+        case "$fp_iv" in ''|*[!0-9]*) fp_iv=0 ;; esac
+        fp_lim=$((2 * fp_iv + 5))
+        [ "$AGG_MAX_AGE" -ge "$fp_lim" ] && fp_lim="$AGG_MAX_AGE"
+        fp_up=""; read fp_up _ 2>/dev/null < /proc/uptime; fp_up="${fp_up%.*}"
+        case "$fp_t$fp_up" in
+            ''|*[!0-9]*)
+                echo '{"error": "aggregator data unreadable - /etc/init.d/trafficchart restart"}' ;;
+            *)
+                if [ "$fp_up" -ge "$fp_t" ] && [ $((fp_up - fp_t)) -le "$fp_lim" ]; then
+                    printf '%s\n' "$AGG_JSON"
+                else
+                    echo '{"error": "aggregator data stale - /etc/init.d/trafficchart restart"}'
+                fi ;;
+        esac
+        ;;
+esac
