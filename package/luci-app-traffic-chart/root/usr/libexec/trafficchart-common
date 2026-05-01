@@ -1,0 +1,576 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# trafficchart-common - shared settings (tc_cfg) and shaper/device detection (sourced, not executed)
+#
+# Install as /usr/libexec/trafficchart-common. Sourced by trafficchart-agg and
+# trafficchart-apps (tc_cfg for settings) and by trafficchart-tc (shaper detection, link
+# counters for trafficchart-agg).
+# Shapers are found in the kernel (tc qdisc / tc filter), no sqm / qosmate / ... config is read.
+#
+# Usage:
+#   . /usr/libexec/trafficchart-common
+#   tc_resolve          # who is shaped, and where
+#   tc_dev_stats DEV BACKEND [KBIT]  # "<bytes> <dropped> <ecn> <backlog> <shaper json>" with ONE tc + ONE awk
+#   tc_build_frag                 # FRAG = the JSON members the page needs about the link (stored in classes.json)
+#   tc_resolve_cached             # tc_resolve with a cache (cheap enough for every poll)
+#
+# tc_resolve sets:
+#   BACKEND        nss | generic
+#                    nss     NSS hardware offload: nsstbl/nssfq_codel, download
+#                            shaper on nssifb
+#                    generic stock kernel shaper set up by sqm-scripts: cake or
+#                            htb+fq_codel, download shaper on ifb4<wan>
+#                  Auto: "nss" if the nssifb device exists and the nss_ifb module is loaded,
+#                  else "generic". To force one:
+#                    touch /etc/config/trafficchart
+#                    uci set trafficchart.global=trafficchart
+#                    uci set trafficchart.global.backend=generic     # or: nss / auto
+#                    uci commit trafficchart
+#   IFACE_LIST     all shaped WAN devices found in the kernel (space
+#                  separated, first one first; several = multi-WAN)
+#   FOUND_IFACE    the first of them
+#   FOUND_UPLOAD / FOUND_DOWNLOAD   shaper rates in kbit/s (read from the qdiscs), SUMMED over
+#                  all shaped devices
+#   TX_DEVS        devices carrying the upload shaper (NSS: VLAN suffix removed)
+#   RX_DEVS        devices carrying the download shaper (ifb / nssifb)
+#   TC_DIAG        human readable reason when detection had to fall back / failed
+#   TC_FALLBACK    1 = no shaper found, raw counters of the detected WAN device
+#   RX_RAW         interfaces whose ifb does not exist (ingress shaping inactive):
+#                  their raw rx counter is used as the best available signal
+#   RX_DEV / TX_IFACE   first entry of RX_DEVS / TX_DEVS (used for the shaper
+#                  health line of the page, which shows one device per direction)
+#   QTXT SYSNOTE   wording for the counter source strings
+#   WAN_INFO       one line per shaped WAN device: "iface<TAB>tx_dev<TAB>rx_dev<TAB>
+#                  upload_kbit<TAB>download_kbit" - feeds tc_wan_json() below
+#
+# tc_wan_json() prints a JSON array with one object per configured WAN queue
+# (iface, rx_bytes, tx_bytes, download_kbit, upload_kbit), or "[]" when there
+# is only one queue. Summing everything into one rate/one configured-rate
+# figure (as FOUND_UPLOAD/FOUND_DOWNLOAD/RX_BYTES/TX_BYTES already do) is fine
+# for a single WAN but blends together very different links in a multi-WAN
+# setup; this lets the page optionally show a per-WAN breakdown instead.
+#
+
+SYSNET="${TC_SYSNET:-/sys/class/net}"
+
+# Index of the options that exist in /etc/config/trafficchart (section global),
+# read ONCE per process with a single "uci show". tc_cfg() then only forks
+# "uci get" for options that are really set.
+tc_load_config() {
+    [ -n "$TC_CFG_LOADED" ] && return 0
+    TC_CFG_LOADED=1
+    TC_UCI_KEYS=" "
+    command -v uci >/dev/null 2>&1 || return 0
+    local dump line k
+    dump=$(uci -q show trafficchart.global 2>/dev/null)
+    while IFS= read -r line; do
+        case "$line" in
+            trafficchart.global.*=*)
+                k="${line#trafficchart.global.}"; k="${k%%=*}"
+                TC_UCI_KEYS="${TC_UCI_KEYS}${k} " ;;
+        esac
+    done <<TC_EOF
+$dump
+TC_EOF
+}
+
+# lower case of $1 without forking (result in TC_LC)
+tc_lc() {
+    local s="$1" out="" c
+    while [ -n "$s" ]; do
+        c="${s%"${s#?}"}"; s="${s#?}"
+        case "$c" in
+            A) c=a;; B) c=b;; C) c=c;; D) c=d;; E) c=e;; F) c=f;; G) c=g;; H) c=h;; I) c=i;;
+            J) c=j;; K) c=k;; L) c=l;; M) c=m;; N) c=n;; O) c=o;; P) c=p;; Q) c=q;; R) c=r;;
+            S) c=s;; T) c=t;; U) c=u;; V) c=v;; W) c=w;; X) c=x;; Y) c=y;; Z) c=z;;
+        esac
+        out="${out}${c}"
+    done
+    TC_LC="$out"
+}
+
+tc_cfg_valid() {
+    local t
+    case "$2" in
+        int)  case "$3" in ''|*[!0-9]*) return 1 ;; esac ;;
+        pint) case "$3" in ''|*[!0-9]*) return 1 ;; esac
+              case "$3" in *[1-9]*) ;; *) return 1 ;; esac ;;
+        ratio) case "$3" in ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;; esac
+               awk -v v="$3" 'BEGIN { exit !(v > 0 && v < 1) }' || return 1 ;;
+        num)  case "$3" in ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;; esac ;;
+        list) for t in $3; do case "$t" in ''|*[!0-9]*) return 1 ;; esac; done ;;
+        l2)   case "$3" in auto|[0-9]|[0-9][0-9]) ;; *) return 1 ;; esac ;;
+        sock)
+            case "$3" in
+                /var/run/netifyd/*.sock) ;;
+                *) return 1 ;;
+            esac
+            case "${3#/var/run/netifyd/}" in
+                ''|*/*|*[!A-Za-z0-9._-]*) return 1 ;;
+            esac
+            ;;
+    esac
+    return 0
+}
+
+tc_cfg() {
+    local var="$1" def="$2" type="$3" key val
+
+    case "$var" in
+        ''|*[!A-Za-z0-9_]*)
+            return 1
+            ;;
+    esac
+
+    # Keep explicitly supplied environment variables unchanged (any variable,
+    # the name was validated above, so the eval only sees [A-Za-z0-9_]).
+    eval "[ -n \"\${$var+x}\" ]" && return 0
+
+    tc_load_config
+    tc_lc "$var"; key="$TC_LC"
+    case "$TC_UCI_KEYS" in
+        *" $key "*)
+            val=$(uci -q get "trafficchart.global.$key" 2>/dev/null)
+            if tc_cfg_valid "$key" "$type" "$val"; then
+                eval "$var=\$val"      # value is data, never parsed as shell
+                return 0
+            fi
+            logger -t trafficchart "config: invalid value '$val' for option $key - using default '$def'" 2>/dev/null
+            ;;
+    esac
+    eval "$var=\$def"
+}
+
+tc_detect_backend() {
+    local b
+    b=$(uci -q get trafficchart.global.backend 2>/dev/null)
+    case "$b" in
+        nss|generic) echo "$b"; return ;;
+    esac
+    # An interface merely named "nssifb" existing is not proof the NSS shaper
+    # is actually in use (it only proves *something* created a device by that
+    # name); also require the nss_ifb kernel module to be loaded, a stronger
+    # and still-cheap signal. Downstream code is self-correcting either way
+    # (the shaper JSON helpers just return {} if the expected qdisc is not
+    # there), but this avoids picking the wrong backend's shaper reader.
+    if [ -e "$SYSNET/nssifb" ] && [ -d /sys/module/nss_ifb ]; then
+        echo nss
+    else
+        echo generic
+    fi
+}
+
+# ifb device that sqm-scripts or qosmate created for a WAN device:
+# sqm-scripts: ifb4<wan> (name limited to 15 chars)
+# qosmate:     ifb-<wan> (hyphen)
+# else: the only ifb* device, if there is exactly one.
+tc_find_ifb() {
+    local wan="$1" cand n found=""
+    [ -n "$wan" ] || return 1
+    for cand in "ifb4${wan}" "$(echo "ifb4${wan}" | cut -c1-15)" "ifb-${wan}"; do
+        [ -e "$SYSNET/${cand}" ] && { echo "$cand"; return 0; }
+    done
+    n=0
+    for cand in "$SYSNET"/ifb4* "$SYSNET"/ifb-*; do
+        [ -e "$cand" ] || continue
+        n=$((n + 1)); found="${cand##*/}"
+    done
+    [ "$n" = "1" ] && echo "$found"
+}
+
+# bytes of the ROOT qdisc: first "Sent <bytes> bytes ..." line of the PLAIN TEXT
+# "tc -s qdisc show" output (tc lists the root first). Deliberately NOT "tc -j":
+# JSON support depends on an optional libjson build flag many OpenWrt tc builds
+# lack, in which case "-j" silently returns nothing.
+tc_qdisc_bytes() {
+    local dev="$1" bytes
+    [ -n "$dev" ] && [ -e "$SYSNET/${dev}" ] || return 1
+    # noqueue (pppoe-wan, vlan, ...) always reports "Sent 0": useless - return
+    # failure so the caller falls back to the sysfs counters
+    bytes=$(tc -s qdisc show dev "$dev" 2>/dev/null | awk '
+        /^qdisc / { if ($2 == "noqueue") exit; next }
+        /^ *Sent / { print $2; exit }')
+    case "$bytes" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    echo "$bytes"
+}
+
+# Everything the aggregator needs from ONE device with ONE "tc -s qdisc show"
+# and ONE awk:
+#   "<bytes> <dropped> <ecn> <backlog bytes> <shaper json>"
+# <bytes> = Sent bytes of the root qdisc, or "-" if it cannot be used (noqueue
+# always reports 0: the caller falls back to the sysfs counters). Drops / ECN /
+# backlog follow the rules of the nss / generic cases below. <shaper json> is the object
+# the page shows in its shaper line (nsstbl + nssfq_codel for BACKEND nss, the
+# stock shaper otherwise; "{}" if the device has no such qdisc); it never
+# contains a blank, so the line splits into exactly 5 words. $3 = configured SQM
+# rate in kbit, shown when a stock qdisc does not report one (htb keeps its
+# rate in a class). Prints nothing if the device does not exist.
+tc_dev_stats() {
+    local dev="$1" backend="$2" cfg="${3:-0}"
+    [ -n "$dev" ] && [ -e "$SYSNET/${dev}" ] || return 1
+    tc -s qdisc show dev "$dev" 2>/dev/null | awk -v BACKEND="$backend" -v CFG="$cfg" '
+        function num(v,   n, u) {
+            n = v + 0; u = v; sub(/^[0-9.]+/, "", u)
+            if (u ~ /^K/) n *= 1024; else if (u ~ /^M/) n *= 1048576; else if (u ~ /^G/) n *= 1073741824
+            return n
+        }
+        /^qdisc / {
+            q++; nm[q] = $2
+            for (i = 1; i <= NF; i++) {
+                if ($i == "bandwidth" && bw == "") bw = $(i + 1)
+                if ($i == "rate" && nm[q] == "nsstbl") rtok[q] = $(i + 1)
+                if ($i == "target") tg[q] = $(i + 1)
+                if ($i == "limit") lm[q] = $(i + 1)
+                if ($i == "flows") fl[q] = $(i + 1)
+            }
+            next
+        }
+        /^ *backlog / { blb[q] = num($2); blp[q] = num($3); next }
+        # cake has no single top-level ECN counter like fq_codels "ecn_mark"
+        # field - it only reports marks per traffic class (tin), as a bare
+        # "marks N" line, so without this a cake root always showed 0 ECN marks.
+        /^[ \t]*marks[ \t]+[0-9]+/ { se[q] += $2 + 0; next }
+        /^ *Sent / {
+            l = $0; gsub(/[(),]/, " ", l); n = split(l, f, " ")
+            for (i = 1; i <= n; i++) {
+                if (f[i] == "Sent" && !(q in sent)) { sent[q] = f[i + 1]; pk[q] = f[i + 3] }
+                if (f[i] == "dropped") { dr[q] = f[i + 1] + 0; hasdr[q] = 1 }
+                if (f[i] == "overlimits") ov[q] = f[i + 1]
+            }
+            next
+        }
+        /maxpacket/ {
+            for (i = 1; i < NF; i++) {
+                if ($i == "maxpacket") { mp[q] = $(i + 1); gmp = $(i + 1) }
+                if ($i == "drop_overlimit") { dol[q] = $(i + 1); gdol = $(i + 1) }
+                if ($i == "new_flow_count") { nfc[q] = $(i + 1); gnfc = $(i + 1) }
+                if ($i == "ecn_mark") { se[q] = $(i + 1) + 0; ecnt[q] = $(i + 1); gecn = $(i + 1) }
+            }
+            next
+        }
+        /new_flows_len/ { nfl[q] = $2; ofl[q] = $4; gnfl = $2; gofl = $4 }
+        END {
+            bytes = "-"
+            if (q >= 1 && nm[1] != "noqueue" && (1 in sent) && sent[1] ~ /^[0-9]+$/) bytes = sent[1]
+
+            # ---- drops / ecn / backlog
+            D = 0; E = 0; B = 0
+            if (BACKEND == "nss") {
+                for (i = 1; i <= q; i++) if (nm[i] == "nssfq_codel") { D = dr[i]; E = se[i] }
+                if (!D) for (i = 1; i <= q; i++) if (nm[i] == "nsstbl") D = dr[i]
+                for (i = 1; i <= q; i++) if (nm[i] == "nssfq_codel" || nm[i] == "nsstbl") B += blb[i]
+            } else {
+                for (i = 1; i <= q; i++) if (nm[i] ~ /fq_codel$/) { D += dr[i]; E += se[i] }
+                if (!D && q >= 1) D = dr[1] + 0
+                if (!E && q >= 1) E = se[1] + 0
+                B = blb[1] + 0
+            }
+
+            # ---- shaper json (the live shaper line of the page)
+            json = "{}"
+            if (BACKEND == "nss") {
+                qt = 0; qf = 0
+                for (i = 1; i <= q; i++) { if (nm[i] == "nsstbl") qt = i; if (nm[i] == "nssfq_codel") qf = i }
+                if (qt > 0 && (qt in sent)) {
+                    json = sprintf("{\"rate\":\"%s\",\"target\":\"%s\",\"limit\":\"%s\",\"flows\":%d,", rtok[qt], tg[qf], lm[qf], fl[qf] + 0)
+                    json = json sprintf("\"sent\":%.0f,\"pkts\":%.0f,\"dropped\":%.0f,\"overlimits\":%.0f,", sent[qt], pk[qt], (qf > 0 && (qf in hasdr)) ? dr[qf] : dr[qt], ov[qt])
+                    json = json sprintf("\"backlog_b\":%.0f,\"backlog_p\":%.0f,\"ecn\":%.0f,\"drop_overlimit\":%.0f,", blb[qf] + blb[qt], blp[qf] + blp[qt], gecn + 0, gdol + 0)
+                    json = json sprintf("\"new_flow_count\":%.0f,\"flows_new\":%d,\"flows_old\":%d,\"maxpacket\":%d}", gnfc + 0, gnfl + 0, gofl + 0, gmp + 0)
+                }
+            } else if (q >= 1 && (1 in sent)) {
+                lf = 0; Dj = 0; Ej = 0; Oj = 0; Nj = 0; FN = 0; FO = 0; M = 0
+                for (i = 1; i <= q; i++) if (nm[i] ~ /fq_codel$/) {
+                    if (!lf) lf = i
+                    Dj += dr[i]; Ej += ecnt[i]; Oj += dol[i]; Nj += nfc[i]; FN += nfl[i]; FO += ofl[i]
+                    if (mp[i] + 0 > M) M = mp[i] + 0
+                }
+                if (!lf) { lf = 1; Dj = dr[1] }
+                rate = bw
+                if (rate == "" && CFG + 0 > 0) rate = (CFG >= 1000) ? sprintf("%gMbit", CFG / 1000) : sprintf("%dkbit", CFG)
+                json = sprintf("{\"rate\":\"%s\",\"target\":\"%s\",\"limit\":\"%s\",\"flows\":%d,", rate, tg[lf], lm[lf], fl[lf] + 0)
+                json = json sprintf("\"sent\":%.0f,\"pkts\":%.0f,\"dropped\":%.0f,\"overlimits\":%.0f,", sent[1], pk[1], Dj, ov[1])
+                json = json sprintf("\"backlog_b\":%.0f,\"backlog_p\":%.0f,\"ecn\":%.0f,\"drop_overlimit\":%.0f,", blb[1], blp[1], Ej, Oj)
+                json = json sprintf("\"new_flow_count\":%.0f,\"flows_new\":%d,\"flows_old\":%d,\"maxpacket\":%d}", Nj, FN, FO, M)
+            }
+            gsub(/[ \t]/, "", json)
+            printf "%s %.0f %.0f %.0f %s\n", bytes, D + 0, E + 0, B + 0, json
+        }'
+}
+
+# Everything the page needs besides the traffic numbers, as ONE JSON fragment
+# (no enclosing braces) in FRAG. Written by trafficchart-tc (second output line,
+# picked up by trafficchart-agg and stored in classes.json), so
+# luci.trafficchart does not have to run any tc/nft/uci at all.
+# Input: TC_DIAG BACKEND IFACE_NAME RX_BYTES TX_BYTES RX_SOURCE TX_SOURCE
+#        SHAPER_RX SHAPER_TX FOUND_UPLOAD FOUND_DOWNLOAD WAN_JSON
+tc_build_frag() {
+    [ -n "$SHAPER_RX" ] || SHAPER_RX='{}'
+    [ -n "$SHAPER_TX" ] || SHAPER_TX='{}'
+    [ -n "$WAN_JSON" ] || WAN_JSON='[]'
+    FRAG="\"tc_diag\":\"${TC_DIAG}\",\"backend\":\"${BACKEND}\",\"iface\":{\"name\":\"${IFACE_NAME}\",\"rx_bytes\":${RX_BYTES:-0},\"tx_bytes\":${TX_BYTES:-0},\"rx_source\":\"${RX_SOURCE}\",\"tx_source\":\"${TX_SOURCE}\"},\"shaper\":{\"rx\":${SHAPER_RX},\"tx\":${SHAPER_TX}},\"sqm\":{\"upload_kbit\":${FOUND_UPLOAD:-0},\"download_kbit\":${FOUND_DOWNLOAD:-0}},\"wan\":${WAN_JSON}"
+}
+
+# list helpers: tc_in_list "<list>" item / tc_push LISTVAR item (no duplicates)
+tc_in_list() {
+    case " $1 " in *" $2 "*) return 0 ;; esac
+    return 1
+}
+tc_push() {
+    local var="$1" item="$2" cur
+    [ -n "$item" ] || return 0
+    eval "cur=\$$var"
+    tc_in_list "$cur" "$item" && return 0
+    eval "$var=\"\${cur:+\$cur }\$item\""
+}
+
+tc_num() {
+    case "$1" in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac
+}
+
+# logical interface name (wan) or device name -> existing device; fails if unknown
+tc_dev_of() {
+    local n="$1" d
+    case "$n" in ''|*[!A-Za-z0-9._@-]*) return 1 ;; esac
+    if [ -e "$SYSNET/$n" ]; then echo "$n"; return 0; fi
+    command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1 || return 1
+    d=$(ubus call "network.interface.$n" status 2>/dev/null | jsonfilter -e '@.l3_device' -e '@.device' 2>/dev/null | head -n1)
+    [ -n "$d" ] && [ -e "$SYSNET/$d" ] && { echo "$d"; return 0; }
+    return 1
+}
+
+# Fallback when no usable SQM queue exists: find the WAN device ourselves.
+#   1. option wan_dev (device or logical interface name)
+#   2. ubus: l3_device of "wan" / "wan6"
+#   3. device of the default route (IPv4, then IPv6)
+tc_detect_wan_dev() {
+    local d n cfg
+    cfg=$(uci -q get trafficchart.global.wan_dev 2>/dev/null)
+    if [ -n "$cfg" ]; then
+        d=$(tc_dev_of "$cfg") && [ -n "$d" ] && { echo "$d"; return 0; }
+        logger -t trafficchart "option wan_dev '$cfg' is not a usable device - auto-detecting" 2>/dev/null
+    fi
+    if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+        for n in wan wan6; do
+            d=$(ubus call "network.interface.$n" status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null | head -n1)
+            [ -n "$d" ] && [ -e "$SYSNET/$d" ] && { echo "$d"; return 0; }
+        done
+    fi
+    for n in -4 -6; do
+        d=$(ip $n route show default 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+        [ -n "$d" ] && [ -e "$SYSNET/$d" ] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+
+# JSON array of per-queue counters, built from WAN_INFO (set by tc_resolve /
+# tc_add_queue). Prints "[]" when there is 0 or 1 configured queue, so the
+# common single-WAN case stays exactly as before and the page does not need
+# to show a breakdown for it.
+tc_wan_json() {
+    local n oldifs
+    n=$(printf '%s\n' "$WAN_INFO" | grep -c .)
+    if [ -z "$n" ] || [ "$n" -le 1 ]; then echo "[]"; return; fi
+    oldifs="$IFS"
+    printf '%s\n' "$WAN_INFO" | {
+        first=1
+        printf '['
+        while IFS="$(printf '\t')" read -r iface tx rxdev up down; do
+            [ -n "$iface" ] || continue
+            rb=$(tc_qdisc_bytes "$rxdev")
+            [ -z "$rb" ] && rb=$(cat "$SYSNET/${rxdev}/statistics/rx_bytes" 2>/dev/null)
+            tb=$(tc_qdisc_bytes "$tx")
+            [ -z "$tb" ] && tb=$(cat "$SYSNET/${tx}/statistics/tx_bytes" 2>/dev/null)
+            case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
+            case "$tb" in ''|*[!0-9]*) tb=0 ;; esac
+            [ "$first" = "1" ] || printf ','
+            first=0
+            printf '{"iface":"%s","rx_bytes":%s,"tx_bytes":%s,"download_kbit":%s,"upload_kbit":%s}' \
+                "$iface" "$rb" "$tb" "${down:-0}" "${up:-0}"
+        done
+        printf ']'
+    }
+    IFS="$oldifs"
+}
+
+# ingress redirect target of device $1: "tc filter ... mirred (Egress Redirect to device ifb4wan)".
+# Every ifb based shaper (sqm-scripts, qosmate, cake-autorate, hand written scripts ...) has one.
+tc_ifb_of() {
+    [ -n "$1" ] || return 1
+    tc filter show dev "$1" ingress 2>/dev/null | awk '
+        { for (i = 1; i < NF; i++) if ($i == "device") { d = $(i + 1); gsub(/[^A-Za-z0-9._@-]/, "", d); print d; exit } }'
+}
+
+# Configured rate of a shaped device in kbit, read from its own qdisc / root class
+# ("bandwidth 50Mbit" cake, "rate 90Mbit" nsstbl / htb). 0 if the qdisc does not say.
+tc_dev_rate_kbit() {
+    local r
+    [ -n "$1" ] || { echo 0; return; }
+    r=$( { tc qdisc show dev "$1" 2>/dev/null; tc class show dev "$1" 2>/dev/null; } | awk '
+        function kbit(v,   n, u) {
+            n = v + 0; u = tolower(v); sub(/^[0-9.]+/, "", u)
+            if (u ~ /^g/) n *= 1000000; else if (u ~ /^m/) n *= 1000; else if (u ~ /^k/) n *= 1; else n /= 1000
+            return n
+        }
+        { for (i = 1; i < NF; i++) if (($i == "bandwidth" || $i == "rate") && $(i + 1) ~ /^[0-9]/) { print int(kbit($(i + 1))); exit } }')
+    tc_num "$r"
+}
+
+# Devices that carry a shaper, found in the kernel - no sqm / qosmate / ... config is read:
+#   nss      a root qdisc nsstbl (the ingress side is always nssifb)
+#   generic  an ingress qdisc that redirects to an ifb
+tc_find_shaped() {
+    local d
+    if [ "$BACKEND" = "nss" ]; then
+        tc qdisc show 2>/dev/null | awk '$2 == "nsstbl" { for (i = 1; i < NF; i++) if ($i == "dev" && $(i + 1) != "nssifb") print $(i + 1) }'
+    else
+        for d in $(tc qdisc show 2>/dev/null | awk '$2 == "ingress" { for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }'); do
+            [ -n "$(tc_ifb_of "$d")" ] && echo "$d"
+        done
+    fi
+}
+
+# Sets (from the kernel state only): BACKEND IFACE_LIST FOUND_IFACE FOUND_UPLOAD FOUND_DOWNLOAD
+# TX_DEVS RX_DEVS RX_RAW TC_DIAG TC_FALLBACK RX_DEV TX_IFACE WAN_INFO QTXT SYSNOTE
+# Order: option wan_dev (device / interface names, space separated) > shaped devices found in
+# the kernel > the WAN device (default route), whose raw counters are used when nothing is shaped.
+tc_resolve() {
+    local w d devs cfg tx ifb rxdev up dn
+    BACKEND=$(tc_detect_backend)
+    IFACE_LIST=""; FOUND_IFACE=""; FOUND_UPLOAD=0; FOUND_DOWNLOAD=0
+    TX_DEVS=""; RX_DEVS=""; RX_RAW=""; WAN_INFO=""; TC_DIAG=""; TC_FALLBACK=0
+    devs=""
+    cfg=$(uci -q get trafficchart.global.wan_dev 2>/dev/null)
+    for w in $cfg; do d=$(tc_dev_of "$w") && tc_push devs "$d"; done
+    if [ -z "$devs" ]; then
+        for w in $(tc_find_shaped); do tc_push devs "$w"; done
+    fi
+    if [ -z "$devs" ]; then
+        w=$(tc_detect_wan_dev)
+        if [ -n "$w" ]; then
+            tc_push devs "$w"; TC_FALLBACK=1
+            TC_DIAG="no shaper found - using raw counters of $w (no configured rate)"
+        else
+            TC_DIAG="no shaper and no WAN device found - set option wan_dev in Traffic Chart Settings"
+        fi
+    fi
+    command -v tc >/dev/null 2>&1 || TC_DIAG="${TC_DIAG:+$TC_DIAG; }tc is not installed (tc-tiny / tc-full), using sysfs counters"
+
+    for w in $devs; do
+        if [ "$BACKEND" = "nss" ]; then
+            tx=$(echo "$w" | sed 's/\.[0-9]*//g')     # NSS shapes the hardware device, not the VLAN
+            ifb=nssifb
+        else
+            tx="$w"
+            ifb=$(tc_ifb_of "$w")
+            [ -n "$ifb" ] && [ -e "$SYSNET/$ifb" ] || ifb=$(tc_find_ifb "$w")
+        fi
+        tc_push IFACE_LIST "$w"
+        [ -n "$FOUND_IFACE" ] || FOUND_IFACE="$w"
+        tc_push TX_DEVS "$tx"
+        up=$(tc_dev_rate_kbit "$tx"); dn=0
+        if [ -n "$ifb" ] && [ -e "$SYSNET/$ifb" ]; then
+            tc_push RX_DEVS "$ifb"; rxdev="$ifb"; dn=$(tc_dev_rate_kbit "$ifb")
+        else
+            tc_push RX_RAW "$w"; rxdev="$w"
+        fi
+        FOUND_UPLOAD=$((FOUND_UPLOAD + up)); FOUND_DOWNLOAD=$((FOUND_DOWNLOAD + dn))
+        # one line per WAN: iface, tx dev, rx dev, upload kbit, download kbit (feeds tc_wan_json)
+        WAN_INFO="${WAN_INFO:+$WAN_INFO
+}$(printf '%s\t%s\t%s\t%s\t%s' "$w" "$tx" "$rxdev" "$up" "$dn")"
+    done
+
+    RX_DEV="${RX_DEVS%% *}"
+    TX_IFACE="${TX_DEVS%% *}"
+    tc_set_qtxt
+}
+
+# tc_resolve() with a cache, for callers that run every few seconds
+# (trafficchart-tc, once per aggregator poll). tc_resolve costs 10-15 forks
+# (config_load, uci, sed, ubus, jsonfilter ...) for a result that practically
+# never changes. The result is kept in $TC_CACHE and reused while
+#   - it is younger than TC_CACHE_TTL seconds (60; 10 while a configured ingress
+#     device does not exist yet, 5 while nothing was found at all),
+#   - none of the config files in TC_CFG_FILES is newer than it,
+#   - every device in it still exists.
+# Everything is checked with shell builtins (no fork on a hit). Sets the same
+# variables as tc_resolve (BACKEND IFACE_LIST FOUND_IFACE FOUND_UPLOAD
+# FOUND_DOWNLOAD TX_DEVS RX_DEVS RX_RAW TC_DIAG TC_FALLBACK RX_DEV TX_IFACE
+# WAN_INFO QTXT SYSNOTE) plus NWAN, the number of configured queues.
+tc_resolve_cached() {
+    local now up ttl f d ok=1 tmp t
+    TC_CACHE="${TC_CACHE:-${OUT_DIR:-${TC_OUT_DIR:-/var/run/trafficchart}}/tcdevs}"
+    up=""; read up _ 2>/dev/null < /proc/uptime
+    now="${up%.*}"
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+
+    if [ "$now" -gt 0 ] && [ -r "$TC_CACHE" ]; then
+        C_V=""; C_UP=""; C_BACKEND=""; C_RX_DEVS=""; C_TX_DEVS=""; C_RX_RAW=""; C_FALLBACK=""
+        C_IFACE_LIST=""; C_FOUND_UPLOAD=""; C_FOUND_DOWNLOAD=""; C_TC_DIAG=""; C_NWAN=""; C_WAN_INFO=""
+        . "$TC_CACHE" 2>/dev/null
+        [ "$C_V" = "2" ] || ok=0
+        ttl="${TC_CACHE_TTL:-60}"
+        [ -n "$C_RX_RAW" ] && ttl=10
+        [ -z "$C_RX_DEVS$C_TX_DEVS" ] && ttl=5
+        case "$C_UP" in
+            ''|*[!0-9]*) ok=0 ;;
+            *) { [ "$now" -ge "$C_UP" ] && [ $((now - C_UP)) -lt "$ttl" ]; } || ok=0 ;;
+        esac
+        [ -n "$C_BACKEND" ] || ok=0
+        if [ "$ok" = 1 ]; then
+            for f in ${TC_CFG_FILES:-/etc/config/trafficchart}; do
+                if [ "$f" -nt "$TC_CACHE" ]; then ok=0; break; fi
+            done
+        fi
+        if [ "$ok" = 1 ]; then
+            for d in $C_RX_DEVS $C_TX_DEVS $C_RX_RAW; do
+                [ -e "$SYSNET/$d" ] || { ok=0; break; }
+            done
+        fi
+        if [ "$ok" = 1 ]; then
+            BACKEND="$C_BACKEND"; RX_DEVS="$C_RX_DEVS"; TX_DEVS="$C_TX_DEVS"
+            RX_RAW="$C_RX_RAW"; TC_FALLBACK="$C_FALLBACK"
+            IFACE_LIST="$C_IFACE_LIST"; FOUND_IFACE="${C_IFACE_LIST%% *}"
+            FOUND_UPLOAD="$C_FOUND_UPLOAD"; FOUND_DOWNLOAD="$C_FOUND_DOWNLOAD"
+            TC_DIAG="$C_TC_DIAG"; NWAN="$C_NWAN"; WAN_INFO="$C_WAN_INFO"
+            RX_DEV="${RX_DEVS%% *}"; TX_IFACE="${TX_DEVS%% *}"
+            tc_set_qtxt
+            return 0
+        fi
+    fi
+
+    tc_resolve
+    NWAN=0
+    if [ -n "$WAN_INFO" ]; then
+        NWAN=1; t="$WAN_INFO"
+        while :; do
+            case "$t" in
+                *"
+"*) NWAN=$((NWAN + 1)); t="${t#*
+}" ;;
+                *) break ;;
+            esac
+        done
+    fi
+    [ "$now" -gt 0 ] || return 0
+    case "$BACKEND$RX_DEVS$TX_DEVS$RX_RAW$IFACE_LIST$TC_DIAG$WAN_INFO" in *\'*) return 0 ;; esac
+    tmp="$TC_CACHE.$$"
+    { printf "C_V='2'\nC_UP='%s'\nC_BACKEND='%s'\nC_RX_DEVS='%s'\nC_TX_DEVS='%s'\nC_RX_RAW='%s'\nC_FALLBACK='%s'\n" \
+        "$now" "$BACKEND" "$RX_DEVS" "$TX_DEVS" "$RX_RAW" "$TC_FALLBACK" > "$tmp"
+      printf "C_IFACE_LIST='%s'\nC_FOUND_UPLOAD='%s'\nC_FOUND_DOWNLOAD='%s'\nC_TC_DIAG='%s'\nC_NWAN='%s'\nC_WAN_INFO='%s'\n" \
+        "$IFACE_LIST" "$FOUND_UPLOAD" "$FOUND_DOWNLOAD" "$TC_DIAG" "$NWAN" "$WAN_INFO" >> "$tmp"; } 2>/dev/null \
+        && mv -f "$tmp" "$TC_CACHE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    return 0
+}
+
+# wording for the counter source strings (the end of tc_resolve, for the cache)
+tc_set_qtxt() {
+    if [ "$BACKEND" = "nss" ]; then
+        QTXT="tc qdisc, hw stats"
+        SYSNOTE=", unreliable under NSS offload"
+    else
+        QTXT="tc qdisc"
+        SYSNOTE=""
+    fi
+}

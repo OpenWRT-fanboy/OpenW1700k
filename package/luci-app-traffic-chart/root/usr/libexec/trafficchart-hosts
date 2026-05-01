@@ -1,0 +1,147 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# trafficchart-hosts - LAN device identity for trafficchart-agg
+#
+# Prints tab separated lines:
+#   I <ip> <mac>     every neighbour (ARP / IPv6 ND) with a link-layer address;
+#                    IPv6 fully expanded like /proc/net/nf_conntrack prints it; also the
+#                    addresses of static "config domain" entries that belong to a static host
+#   N <mac> <name>   best known host name for a MAC (DHCP leases first, static
+#                    "config host" entries from /etc/config/dhcp override)
+#
+#   R <ip>           every address owned by the router itself (all interfaces),
+#                    IPv6 fully expanded. Lets the aggregator tell router-originated
+#                    and LAN->router traffic apart from ordinary forwarded flows.
+#
+# Devices are identified by MAC, not IP, so a host's IPv4 address and all its
+# (privacy) IPv6 addresses end up in ONE device.
+#
+# Active re-resolution: trafficchart-agg writes OUT_DIR/unresolved_v6 with LAN
+# IPv6 addresses it has seen carrying traffic but which have no neighbour
+# entry (typical under NSS hardware offload: once a flow is fast-pathed its
+# packets stop reaching the kernel, so IPv6 NUD never sees confirming traffic,
+# ages the entry out, and it drops from "ip neigh show" even though the
+# device is still actively sending). Pinging each address here forces the
+# kernel to run Neighbour Discovery again, so the "ip neigh show" below has a
+# fresh entry for it.
+OUT_DIR="${OUT_DIR:-/var/run/trafficchart}"
+UNRESOLVED_FILE="${UNRESOLVED_FILE:-$OUT_DIR/unresolved_v6}"
+
+# At most UNRESOLVED_MAX pings run in the background per call (once per host refresh of the
+# aggregator); addresses that stay unresolved simply keep showing up keyed by their IPv6 address.
+UNRESOLVED_MAX=32
+
+if [ -s "$UNRESOLVED_FILE" ]; then
+    PING6=""
+    if command -v ping6 >/dev/null 2>&1; then
+        PING6="ping6 -c1 -W1 -q"
+    elif ping -6 -c1 -W1 -q ::1 >/dev/null 2>&1; then
+        PING6="ping -6 -c1 -W1 -q"
+    fi
+    if [ -n "$PING6" ]; then
+        # the jobs live in the subshell of the pipeline, so the wait has to be
+        # in that same subshell (a wait after the pipeline waits for nothing)
+        awk -v max="$UNRESOLVED_MAX" '!seen[$0]++ { print; if (++n >= max) exit }' "$UNRESOLVED_FILE" | {
+            while IFS= read -r addr; do
+                [ -n "$addr" ] || continue
+                $PING6 "$addr" >/dev/null 2>&1 &
+            done
+            wait
+        }
+    fi
+fi
+
+ip neigh show 2>/dev/null | awk '
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss) {
+        if (index(a, ":") == 0) return a
+        n = split(a, h, "::")
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return a
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++)  { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    {
+        mac = ""
+        for (i = 2; i < NF; i++) if ($i == "lladdr") mac = tolower($(i + 1))
+        if (mac != "") print "I\t" v6full($1) "\t" mac
+    }'
+
+ip -o addr show 2>/dev/null | awk '
+    function v6full(a,   n, h, lc, rc, lg, rg, i, g, out, miss) {
+        if (index(a, ":") == 0) return a
+        n = split(a, h, "::")
+        if (n == 1) { lc = split(h[1], lg, ":"); rc = 0; miss = 0 }
+        else {
+            lc = (h[1] == "") ? 0 : split(h[1], lg, ":")
+            rc = (h[2] == "") ? 0 : split(h[2], rg, ":")
+            miss = 8 - lc - rc
+        }
+        if (miss < 0) return a
+        out = ""
+        for (i = 1; i <= lc; i++) { g = tolower(lg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        for (i = 1; i <= miss; i++) out = out (out == "" ? "" : ":") "0000"
+        for (i = 1; i <= rc; i++)  { g = tolower(rg[i]); while (length(g) < 4) g = "0" g; out = out (out == "" ? "" : ":") g }
+        return out
+    }
+    { for (i = 1; i < NF; i++) if ($i == "inet" || $i == "inet6") { a = $(i + 1); sub(/\/.*/, "", a); print "R\t" v6full(a) } }'
+
+[ -r /tmp/dhcp.leases ] && awk '$4 != "" && $4 != "*" { print "N\t" tolower($2) "\t" $4 }' /tmp/dhcp.leases
+
+command -v uci >/dev/null 2>&1 && uci -q show dhcp 2>/dev/null | awk -F"[.=]" '
+    $1 == "dhcp" && $2 ~ /^@?host/ { sec = $2 }
+    { line = $0; sub(/^[^=]*=/, "", line); gsub(/\047/, "", line) }
+    $3 == "name" { name[$2] = line }
+    $3 == "mac"  { split(line, m, " "); mac[$2] = tolower(m[1]) }
+    END { for (s in mac) if (name[s] != "" && mac[s] != "") print "N\t" mac[s] "\t" name[s] }'
+
+command -v uci >/dev/null 2>&1 && uci -q show dhcp 2>/dev/null | awk '
+    function val(l,   v) { v = l; sub(/^[^=]*=/, "", v); gsub(/\047/, "", v); return v }
+    {
+        if (match($0, /^dhcp\.(@host\[[0-9]+\]|[A-Za-z0-9_]+)=host$/)) {
+            sec = substr($0, 6, index($0, "=") - 6); kind[sec] = "host"; next
+        }
+        if (match($0, /^dhcp\.(@domain\[[0-9]+\]|[A-Za-z0-9_]+)=domain$/)) {
+            sec = substr($0, 6, index($0, "=") - 6); kind[sec] = "domain"; next
+        }
+        if (match($0, /^dhcp\.[^.]+\.ip=/)) {
+            sec = substr($0, 6, index($0, ".ip=") - 6); ipval[sec] = val($0); next
+        }
+        if (match($0, /^dhcp\.[^.]+\.mac=/)) {
+            sec = substr($0, 6, index($0, ".mac=") - 6); macval[sec] = tolower(val($0)); next
+        }
+        if (match($0, /^dhcp\.[^.]+\.name=/)) {
+            sec = substr($0, 6, index($0, ".name=") - 6); nameval[sec] = val($0); next
+        }
+    }
+    END {
+        for (s in kind) {
+            if (kind[s] != "host" || !(s in macval)) continue
+            if (s in ipval) hostmac[ipval[s]] = macval[s]
+            if (s in nameval) {
+                nm = tolower(nameval[s])
+                if ((nm in namemac) && namemac[nm] != macval[s]) nameamb[nm] = 1
+                else namemac[nm] = macval[s]
+            }
+        }
+        for (s in kind) {
+            if (kind[s] != "domain" || !(s in ipval)) continue
+            n = split(ipval[s], a, " ")
+            m = ""
+            for (i = 1; i <= n; i++) if (a[i] in hostmac) { m = hostmac[a[i]]; break }
+            if (m == "" && (s in nameval)) {
+                dn = tolower(nameval[s]); sub(/\.lan$/, "", dn)
+                if ((dn in namemac) && !(dn in nameamb)) m = namemac[dn]
+            }
+            if (m == "") continue
+            for (i = 1; i <= n; i++) print "I\t" a[i] "\t" m
+        }
+    }'
+exit 0
