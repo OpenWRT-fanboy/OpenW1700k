@@ -1,0 +1,276 @@
+name: Lint
+
+# Cheap, fast checks — no SDK container, no compile. Three independent jobs
+# so a failure in one doesn't block the others' feedback.
+#
+# JS approach mirrors openwrt/luci's own CI (.github/workflows/eslint.yml,
+# https://github.com/openwrt/luci — fetched 2026-08-21): ESLint 9 flat config,
+# sourceType 'script', LuCI runtime globals declared explicitly, no-undef
+# downgraded to 'warn' because LuCI's 'require "x"' pragma module system
+# can't be statically resolved by ESLint. Scaled down from their whole-repo,
+# diff-based, JS+JSON+MD lint to just this repo's one view-JS directory;
+# JSON validity is covered separately below instead of via @eslint/json.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ucode:
+    name: ucode syntax (appflowd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the ucode interpreter
+        # appflowd is ucode: neither shellcheck (shell) nor eslint (browser JS)
+        # has ever looked at it, so the largest source file in this package had
+        # no CI coverage at all. ucode is not packaged for Ubuntu, so build the
+        # interpreter to get a real compile check.
+        run: |
+          set -eu -o pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake build-essential libjson-c-dev
+          git clone --depth 1 https://github.com/jow-/ucode /tmp/ucode-src
+          cmake -S /tmp/ucode-src -B /tmp/ucode-src/build -DCMAKE_BUILD_TYPE=Release
+          make -C /tmp/ucode-src/build -j"$(nproc)"
+
+      - name: Compile-check every ucode source
+        # `import ... from "fs"` and friends are resolved at COMPILE time, and
+        # the ubus/uci/socket modules only exist on OpenWrt. Stub them on the
+        # module search path so this checks OUR syntax rather than the presence
+        # of platform modules. Stubs only need to satisfy the import form:
+        # namespace imports accept any module, `import { cursor } from "uci"`
+        # needs that name exported.
+        run: |
+          set -eu
+          stubs=/tmp/ucode-stubs
+          mkdir -p "$stubs"
+          for m in fs uloop ubus socket; do echo '// CI stub' > "$stubs/$m.uc"; done
+          printf 'export function cursor() { return {}; }\n' > "$stubs/uci.uc"
+          files=$(find root -type f \( -name '*.uc' -o -path '*/usr/sbin/appflowd' \) 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::error::no ucode sources found; expected root/usr/sbin/appflowd"
+            exit 1
+          fi
+          rc=0
+          for f in $files; do
+            echo "== $f"
+            /tmp/ucode-src/build/ucode -L "$stubs/*.uc" -c "$f" || rc=1
+          done
+          exit "$rc"
+
+  shellcheck:
+    name: shellcheck (init.d / uci-defaults / tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck (pinned)
+        # The runner image ships 0.9.0, which predates the `busybox` shell
+        # dialect (added in 0.10.0). busybox ash IS the runtime for these
+        # scripts, and it supports `local`, which POSIX sh does not; checking
+        # as plain `sh` produces SC3043 on every OpenWrt init script. Pin a
+        # release that understands the real dialect instead of suppressing
+        # the warning.
+        run: |
+          set -eu -o pipefail
+          ver=v0.11.0
+          sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          # Download to a file and verify before unpacking: piping curl straight
+          # into tar hides curl's exit status without pipefail, and executes
+          # whatever arrives with no integrity check at all.
+          curl -fsSL -o /tmp/sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${ver}/shellcheck-${ver}.linux.x86_64.tar.xz"
+          echo "${sha}  /tmp/sc.tar.xz" | sha256sum -c -
+          sudo tar -xJf /tmp/sc.tar.xz --strip-components=1 \
+            -C /usr/local/bin "shellcheck-${ver}/shellcheck"
+          shellcheck --version
+
+      - name: Assert every shebang file is executable
+        # A script that ships without the executable bit installs cleanly and
+        # then fails at runtime. Found the hard way: the package's post-install
+        # could not run /etc/init.d/appflowd ("Permission denied"), so the
+        # service never started and the ubus object never appeared, on a
+        # package whose build was green. luci.mk copies root/ preserving source
+        # modes, so the mode recorded in git is the mode on the device.
+        run: |
+          set -eu
+          bad=0
+          for f in $(find root -type f); do
+            if [ "$(head -c2 "$f")" = "#!" ] && [ ! -x "$f" ]; then
+              echo "::error file=$f::has a shebang but is not executable"
+              bad=1
+            fi
+          done
+          [ "$bad" = 0 ] && echo "all shebang files are executable"
+          exit "$bad"
+
+      - name: Run shellcheck
+        run: |
+          set -eu
+          # busybox ash is the actual runtime and shellcheck >= 0.10 models it
+          # directly, so check against that dialect rather than POSIX sh.
+          # -S warning drops style/info nits so this gates on likely-real
+          # problems, not taste.
+          # Collect only paths that actually exist: a package may ship an
+          # init script, uci-defaults, both or neither, and an unmatched glob
+          # would otherwise be passed to shellcheck as a literal filename.
+          # tests/ is linted deliberately. The hardware suite is what decides
+          # whether everything else in this repo is trustworthy, and it went
+          # unlinted until 2026-08-25: untested test code, which is the same
+          # shape of defect this project keeps finding in its own work.
+          files=$(
+            find root/etc/init.d root/etc/uci-defaults -type f 2>/dev/null
+            find tests -type f -name '*.sh' 2>/dev/null
+          )
+          # Both packages DO ship an init script, so an empty list means the
+          # tree moved or a rename broke the path, not that there is nothing to
+          # check. Passing silently here is how a lint job goes green while
+          # verifying nothing.
+          if [ -z "$files" ]; then
+            echo "::error::no shell scripts found under root/etc: expected an init script"
+            exit 1
+          fi
+          # And assert the suite specifically, because the guard above only
+          # catches "nothing at all". A tests/ rename would otherwise drop the
+          # test scripts from linting while the job stayed green on the init
+          # script alone.
+          if [ -d tests ] && ! echo "$files" | grep -q '^tests/'; then
+            echo "::error::tests/ exists but no *.sh was collected from it"
+            exit 1
+          fi
+          echo "Checking:"; echo "$files"
+          # word splitting is intended here
+          # shellcheck disable=SC2086
+          shellcheck -s busybox -S warning $files
+
+  json:
+    name: JSON validity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate every *.json file parses
+        run: |
+          set -eu
+          status=0
+          while IFS= read -r -d '' f; do
+            if node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$f"; then
+              echo "OK: $f"
+            else
+              echo "::error file=$f::invalid JSON"
+              status=1
+            fi
+          done < <(find . \( -name .git -o -name node_modules \) -prune -o -type f -name '*.json' -print0)
+          exit "$status"
+
+  js:
+    name: eslint (LuCI view JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install ESLint
+        working-directory: ${{ runner.temp }}
+        run: npm install --no-audit --no-fund --no-save eslint@9 @eslint/js@9
+
+      - name: Write LuCI-aware ESLint flat config
+        # Written to $RUNNER_TEMP, not into the repo: this workflow may only
+        # add files under .github/, so the config can't live at repo root.
+        run: |
+          cat > "${{ runner.temp }}/eslint.config.mjs" <<'EOF'
+          import js from '@eslint/js';
+
+          export default [
+            js.configs.recommended,
+            {
+              languageOptions: {
+                ecmaVersion: 'latest',
+                // LuCI view/resource JS is loaded as a classic script (via
+                // 'require "x"' pragma comments), not an ES module.
+                sourceType: 'script',
+                globals: {
+                  L: 'readonly', E: 'readonly', _: 'readonly', N_: 'readonly',
+                  baseclass: 'readonly', rpc: 'readonly', uci: 'readonly',
+                  ui: 'readonly', dom: 'readonly', poll: 'readonly',
+                  fs: 'readonly', network: 'readonly', firewall: 'readonly',
+                  form: 'readonly', session: 'readonly', request: 'readonly',
+                  validation: 'readonly', widgets: 'readonly', view: 'readonly',
+                  window: 'readonly', document: 'readonly', console: 'readonly'
+                },
+                // LuCI's module loader wraps each view file, so a top-level
+                // `return L.view.extend(...)` is legal in this dialect even
+                // though it is not in a plain script. Upstream's own
+                // eslint.config.mjs sets exactly this option for the same
+                // reason; omitting it makes ESLint reject every view file
+                // with "'return' outside of function".
+                parserOptions: { ecmaFeatures: { globalReturn: true } }
+              },
+              rules: {
+                // LuCI's module loader injects the globals above at runtime;
+                // ESLint can't see that, so treat misses as warnings only.
+                'no-undef': 'warn',
+                'no-unused-vars': 'off',
+                'no-empty': 'off',
+                'no-prototype-builtins': 'off'
+              }
+            }
+          ];
+          EOF
+
+      - name: Run ESLint on LuCI view sources
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(htdocs/luci-static/resources/view/appflow/*.js)
+          # This package ships view JS, so an empty glob means the path moved,
+          # not that there is nothing to lint. Fail rather than pass vacuously.
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no view JS found under htdocs/luci-static/resources/view"
+            exit 1
+          fi
+          "${{ runner.temp }}/node_modules/.bin/eslint" \
+            --no-config-lookup \
+            --config "${{ runner.temp }}/eslint.config.mjs" \
+            "${files[@]}"
+
+  jsunit:
+    name: node (frontend units)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # These suites load the REAL LuCI view modules under Node and call their
+      # exported pure functions. No router, no browser, no network, no
+      # dependencies: the loader is tests/luci-module.js and it is a few dozen
+      # lines of vm.Script.
+      #
+      # They exist because every browser-side defect this package has had was
+      # found by a human reading the code. The daemon had a hardware suite and
+      # the JavaScript had nothing, which is backwards.
+      - name: Run the frontend suite
+        run: |
+          set -eu
+          test -f tests/frontend-suite.js || {
+            echo "::error::tests/frontend-suite.js is missing"
+            exit 1
+          }
+          node tests/frontend-suite.js
