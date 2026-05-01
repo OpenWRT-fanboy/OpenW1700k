@@ -1,0 +1,671 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8"
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:287
+msgid "%d applications"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1419
+msgid "%d apps, %d devices"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:667
+msgid "%d d ago"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:585
+msgid "%d flows"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:665
+msgid "%d h ago"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:662
+msgid "%d min ago"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:153
+msgid "%d minute chart, %d second interval"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:286
+msgid "%d of %d applications"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:659
+msgid "%d s ago"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:284
+msgid "%d s rate window"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:335
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:473
+msgid "-%d min"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:585
+msgid "1 flow"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:161
+msgid "12 buckets of 5 min"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:194
+msgid "AI assistants"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:195
+msgid "AI developer"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:196
+msgid "AI infrastructure"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:197
+msgid "AI media"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:144
+msgid "Adult"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:145
+msgid "Advertiser"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:312
+msgid "All traffic"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:109
+msgid "App traffic statistics"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:219
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:129
+#: applications/luci-app-appflow/root/usr/share/luci/menu.d/luci-app-appflow.json:3
+msgid "AppFlow"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1371
+msgid "AppFlow also needs the Netify Agent running (%s), since that is where the per-application classification comes from."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:563
+msgid "AppFlow statistics cleared."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1361
+msgid "AppFlow: access denied"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:516
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:27
+msgid "Application"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:180
+msgid "Authentication"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:146
+msgid "Business"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:147
+msgid "CDN"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:550
+msgid "Cancel"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:190
+msgid "Categories"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:170
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:201
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:89
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:554
+msgid "Clear"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:542
+msgid "Clear statistics"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:482
+msgid "Client"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:524
+msgid "Close"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:383
+msgid "Collecting data…"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:321
+msgid "Collecting samples…"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1413
+msgid "Collector state unknown"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1423
+msgid "Collector uptime: %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:569
+msgid "Could not clear the statistics: %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:657
+msgid "Current rate"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:148
+msgid "Cybersecurity"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:460
+msgid "Data usage"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:181
+msgid "Database"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:536
+msgid "Details"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:655
+msgid "Device"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:386
+msgid "Device: %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:446
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:478
+msgid "Devices"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1324
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:313
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:518
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:28
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:443
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:484
+msgid "Download"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:926
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1146
+msgid "Download: %s, upload: %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:315
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:518
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:658
+msgid "Downloaded"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:150
+msgid "Education"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:151
+msgid "Entertainment"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:182
+msgid "File Server"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:152
+msgid "File Sharing"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:115
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:116
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:78
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:79
+msgid "Filter by application or category"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:102
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:103
+msgid "Filter by device name, MAC or IP"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:153
+msgid "Financial"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1416
+msgid "Flows tracked: %d"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:154
+msgid "Gambling"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:155
+msgid "Games"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:156
+msgid "Government"
+msgstr ""
+
+#: applications/luci-app-appflow/root/usr/share/rpcd/acl.d/luci-app-appflow.json:3
+msgid "Grant access to per-application traffic statistics. The 'apps' method is granted because the overview drills into a device to show what it is doing; it returns an aggregate per device and application from the live flow table. 'flows' remains ungranted: that is the per-connection table, with remote addresses and ports."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:157
+msgid "Hosting"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:509
+msgid "Hosts"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:183
+msgid "Infrastructure"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:149
+msgid "IoT Devices"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:483
+msgid "Last seen"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:221
+msgid "Live per-application traffic, classified on the router by the Netify Agent. Nothing on this page leaves the device."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:151
+msgid "Live throughput"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:158
+msgid "Mail"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:159
+msgid "Malware"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:184
+msgid "Media"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:185
+msgid "Media Provider"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:160
+msgid "Messaging"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:212
+msgid "Multicast / Broadcast"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1411
+msgid "Netify agent connected"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1412
+msgid "Netify agent disconnected"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:186
+msgid "Networking"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:161
+msgid "News"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:645
+msgid "No active devices."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:324
+msgid "No application matches \"%s\"."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:487
+msgid "No application matches that filter."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:488
+msgid "No application traffic in the current window."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:218
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:325
+msgid "No application traffic recorded in the last hour."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:562
+msgid "No categories yet."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1315
+msgid "No data"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:644
+msgid "No device matches that filter."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:505
+msgid "No per-device breakdown available for this application."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:476
+msgid "No time series available for this application."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:162
+msgid "OS & Software Updates"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:580
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:592
+msgid "Other"
+msgstr ""
+
+#: applications/luci-app-appflow/root/usr/share/luci/menu.d/luci-app-appflow.json:16
+msgid "Overview"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:99
+msgid "Past day"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:95
+msgid "Past hour"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:103
+msgid "Past week"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:131
+msgid "Per-application totals for the last hour, aggregated on the router from the Netify Agent's classification. Select a row for the per-device breakdown."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:163
+msgid "Portal"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:187
+msgid "Printing"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:188
+msgid "Proxy"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:164
+msgid "Recreation"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:165
+msgid "Reference"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:166
+msgid "Remote Desktop"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:69
+msgid "Requires history storage (planned)"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:210
+msgid "Router"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:486
+msgid "Share"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1308
+msgid "Share of traffic by category"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:167
+msgid "Shopping"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:390
+msgid "Show all devices"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:868
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1284
+msgid "Show only %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:229
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:339
+msgid "Show per-device details"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:342
+msgid "Show per-device details for %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:892
+msgid "Show what %s is doing"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:361
+msgid "Showing the first %d applications; narrow the search to see the rest."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:168
+msgid "Social Media"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:297
+msgid "Sort by %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:169
+msgid "Sports"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:204
+msgid "Start typing a device name, MAC address or IP to find it. Click a device to see what it is doing in the applications list above. Press Clear to see all devices again."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:186
+msgid "Start typing an application or category name to show only that traffic, or click a category in the Categories panel. Prefix a word with a minus to exclude it instead, for example -netflix. Press Clear to see all traffic again."
+msgstr ""
+
+#: applications/luci-app-appflow/root/usr/share/luci/menu.d/luci-app-appflow.json:25
+msgid "Statistics"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:170
+msgid "Streaming Media"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:171
+msgid "Technology"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:172
+msgid "Telco"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1364
+msgid "The AppFlow collector could not be reached over ubus, so there is no traffic data to show. Start the service and this page picks it up automatically."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:452
+msgid "The daemon could not return details for this application: %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:457
+msgid "This application is no longer in the daemon's aggregate table; it may have been pruned since the table was last refreshed."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:544
+msgid "This resets the per-application, per-device and per-category counters and time buckets. Live flow tracking continues uninterrupted, so the figures on this page simply start again from zero."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:107
+msgid "Top 10 apps by bandwidth usage"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:161
+msgid "Top applications"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:192
+msgid "Top devices"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:30
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:445
+msgid "Total"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1090
+msgid "Traffic over time"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1173
+msgid "Traffic per interval"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:173
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:693
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:438
+msgid "Unclassified"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:211
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:507
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:679
+msgid "Unknown"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:556
+msgid "Unknown device"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:279
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:159
+msgid "Updated %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1329
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:314
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:519
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:29
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:444
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:485
+msgid "Upload"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:316
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:519
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:659
+msgid "Uploaded"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:189
+msgid "VPN"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:175
+msgid "VPN & Proxy"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:174
+msgid "VoIP"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:190
+msgid "Web"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1361
+msgid "appflowd is not running"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1363
+msgid "appflowd is running, but this LuCI session was refused access to it over ubus (permission denied). This is an ACL problem, not a stopped service: confirm the luci-app-appflow ACL is installed and reload rpcd."
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:608
+msgid "by cumulative bytes"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:133
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:456
+msgid "by current rate"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:656
+msgid "just now"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:108
+msgid "last 60 minutes"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:607
+msgid "matching the filter, from flows in progress"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1426
+msgid "netifyd %s"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:335
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:473
+msgid "now"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:455
+msgid "on %s, from flows in progress"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:901
+msgid "router"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/statistics.js:313
+msgid "sum of all applications"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:143
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:190
+msgid "top, by cumulative bytes"
+msgstr ""
+
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/common.js:1311
+#: applications/luci-app-appflow/htdocs/luci-static/resources/view/appflow/overview.js:586
+msgid "total"
+msgstr ""
