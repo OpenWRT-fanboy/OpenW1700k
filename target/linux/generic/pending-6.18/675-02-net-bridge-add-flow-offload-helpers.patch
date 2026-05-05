@@ -1,0 +1,179 @@
+From: Daniel Pawlik <pawlik.dan@gmail.com>
+Date: Sun, 16 Mar 2026 12:00:00 -0500
+Subject: [PATCH 2/5] net: bridge: add flow offload helpers
+
+Add three helpers that expose the bridge state needed by nft_flow_offload
+without requiring callers to include net/bridge/br_private.h. Each
+performs a single br_port_get_rcu() lookup:
+
+ - br_fdb_has_forwarding_entry_rcu(): resolves the VLAN id for the packet
+   (skb tag or PVID when filtering is on, 0 otherwise) then checks whether
+   the bridge FDB contains a forwarding entry (dst != NULL, non-local) for
+   the resulting MAC/VLAN pair.
+
+ - br_vlan_get_offload_info_rcu(): when VLAN filtering is active, returns
+   the VLAN id (skb tag or PVID) and writes the bridge VLAN protocol to
+   *proto in a single port lookup. Returns 0 when filtering is off.
+
+ - br_vlan_is_enabled_rcu(): returns true when VLAN filtering is enabled
+   on the bridge a port device belongs to.
+
+Based on MediaTek SDK patches by Bo-Cun Chen <bc-bocun.chen@mediatek.com>
+and the OpenWrt bridge offload series by Ryan Chen <rchen14b@gmail.com>.
+Signed-off-by: Daniel Pawlik <pawlik.dan@gmail.com>
+---
+ include/linux/if_bridge.h | 32 ++++++++++++++++++++++
+ net/bridge/br_fdb.c       | 28 +++++++++++++++++++
+ net/bridge/br_vlan.c      | 57 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 117 insertions(+)
+
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -118,7 +118,10 @@ int br_vlan_get_pvid_rcu(const struct net_device *dev, u16 *p_pvid);
+ int br_vlan_get_info(const struct net_device *dev, u16 vid,
+ 		     struct bridge_vlan_info *p_vinfo);
+ int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
+ 			 struct bridge_vlan_info *p_vinfo);
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto);
++bool br_vlan_is_enabled_rcu(const struct net_device *dev);
+ bool br_mst_enabled(const struct net_device *dev);
+ int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids);
+ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state);
+@@ -154,7 +157,18 @@ static inline int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
+ {
+ 	return -EINVAL;
+ }
+
++static inline u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++						const struct sk_buff *skb,
++						__be16 *proto)
++{
++	return 0;
++}
++
++static inline bool br_vlan_is_enabled_rcu(const struct net_device *dev)
++{
++	return false;
++}
+ static inline bool br_mst_enabled(const struct net_device *dev)
+ {
+ 	return false;
+@@ -180,6 +192,8 @@ void br_fdb_clear_offload(const struct net_device *dev, u16 vid);
+ bool br_port_flag_is_set(const struct net_device *dev, unsigned long flag);
+ u8 br_port_get_stp_state(const struct net_device *dev);
+ clock_t br_get_ageing_time(const struct net_device *br_dev);
++bool br_fdb_has_forwarding_entry_rcu(const struct net_device *dev,
++				     const struct sk_buff *skb, const u8 *addr);
+ #else
+ static inline struct net_device *
+ br_fdb_find_port(const struct net_device *br_dev,
+@@ -207,6 +219,13 @@ static inline clock_t br_get_ageing_time(const struct net_device *br_dev)
+ {
+ 	return 0;
+ }
++
++static inline bool br_fdb_has_forwarding_entry_rcu(const struct net_device *dev,
++						   const struct sk_buff *skb,
++						   const u8 *addr)
++{
++	return false;
++}
+ #endif
+
+ #endif
+--- a/net/bridge/br_fdb.c
++++ b/net/bridge/br_fdb.c
+@@ -263,6 +263,38 @@ struct net_bridge_fdb_entry *br_fdb_find_rcu(struct net_bridge *br,
+ {
+ 	return fdb_find_rcu(&br->fdb_hash_tbl, addr, vid);
+ }
++
++/**
++ * br_fdb_has_forwarding_entry_rcu - check if a MAC can be forwarded by the bridge
++ * @dev: bridge port network device
++ * @skb: packet buffer (used to determine VLAN id)
++ * @addr: destination MAC address
++ *
++ * Resolves the VLAN id for @skb on @dev (skb VLAN tag when present, PVID
++ * when VLAN filtering is enabled, 0 otherwise) then checks whether the bridge
++ * FDB contains a forwarding entry (dst != NULL, not a local/self entry) for
++ * @addr and that VLAN id. Single br_port_get_rcu() lookup.
++ * Must be called under RCU read lock.
++ */
++bool br_fdb_has_forwarding_entry_rcu(const struct net_device *dev,
++				     const struct sk_buff *skb, const u8 *addr)
++{
++	struct net_bridge_port *port = br_port_get_rcu(dev);
++	struct net_bridge_fdb_entry *fdb;
++	u16 vid = 0;
++
++	if (!port)
++		return false;
++	if (br_opt_get(port->br, BROPT_VLAN_ENABLED)) {
++		if (skb_vlan_tag_present(skb))
++			vid = skb_vlan_tag_get_id(skb);
++		else
++			br_vlan_get_pvid_rcu(dev, &vid);
++	}
++	fdb = br_fdb_find_rcu(port->br, addr, vid);
++	return fdb && fdb->dst;
++}
++EXPORT_SYMBOL_GPL(br_fdb_has_forwarding_entry_rcu);
+
+ /* When a static FDB entry is added, the mac address from the entry is
+  * added to the bridge private HW address list and all required ports
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -1554,6 +1554,51 @@ int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
+ }
+ EXPORT_SYMBOL_GPL(br_vlan_get_info_rcu);
++
++/**
++ * br_vlan_get_offload_info_rcu - get VLAN id and protocol for bridge flow offload
++ * @dev: bridge port network device
++ * @skb: packet buffer
++ * @proto: output for the bridge VLAN protocol (set only when return value != 0)
++ *
++ * When VLAN filtering is enabled, resolves the VLAN id for flow offload (skb
++ * VLAN tag id if present, PVID otherwise) and writes the bridge VLAN protocol
++ * to @proto. Returns 0 when filtering is off or @dev is not a bridge port.
++ * Single br_port_get_rcu() lookup. Must be called under RCU read lock.
++ */
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto)
++{
++	struct net_bridge_port *port = br_port_get_rcu(dev);
++	u16 vid = 0;
++
++	if (!port || !br_opt_get(port->br, BROPT_VLAN_ENABLED))
++		return 0;
++	if (skb_vlan_tag_present(skb))
++		vid = skb_vlan_tag_get_id(skb);
++	else
++		br_vlan_get_pvid_rcu(dev, &vid);
++	if (vid)
++		*proto = port->br->vlan_proto;
++	return vid;
++}
++EXPORT_SYMBOL_GPL(br_vlan_get_offload_info_rcu);
++
++/**
++ * br_vlan_is_enabled_rcu - check if VLAN filtering is active on a port's bridge
++ * @dev: bridge port network device
++ *
++ * Returns true if VLAN filtering is enabled on the bridge @dev belongs to.
++ * Returns false when @dev is not a bridge port or filtering is off.
++ * Must be called under RCU read lock.
++ */
++bool br_vlan_is_enabled_rcu(const struct net_device *dev)
++{
++	struct net_bridge_port *port = br_port_get_rcu(dev);
++
++	return port && br_opt_get(port->br, BROPT_VLAN_ENABLED);
++}
++EXPORT_SYMBOL_GPL(br_vlan_is_enabled_rcu);
+
+ static int br_vlan_is_bind_vlan_dev(const struct net_device *dev)
+ {
+ 	return is_vlan_dev(dev) &&
