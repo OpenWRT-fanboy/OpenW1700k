@@ -1,0 +1,46 @@
+From: OpenWrt <openwrt@openwrt.org>
+Subject: [PATCH] netfilter: nft_flow_offload: address review comments (6.12)
+
+Add a short kernel comment for the bridged-path neighbour lookup skip,
+document the IPv4 TOS / DSCP flow key in nft_flow_route_routing, and keep
+WARN_ON_ONCE when DEV_PATH_BR_VLAN_UNTAG runs without prior encapsulation
+while avoiding underflow (follow-up to the BR_VLAN_UNTAG hunk in 675-02).
+
+Signed-off-by: OpenWrt <openwrt@openwrt.org>
+---
+ net/netfilter/nft_flow_offload.c | 10 +++++++++-
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -107,6 +107,9 @@
+ 	if (!nft_is_valid_ether_device(dev))
+ 		goto out;
+ 
++	/* Bridging fastpath copies Ethernet addresses into ha; do not replace
++	 * them via neighbour lookup on the routed destination device.
++	 */
+ 	if (!is_zero_ether_addr(ha))
+ 		goto out;
+ 
+@@ -239,8 +242,11 @@
+ 				info->num_encaps++;
+ 				break;
+ 			case DEV_PATH_BR_VLAN_UNTAG:
+-				if (info->num_encaps > 0)
++				if (info->num_encaps > 0) {
+ 					info->num_encaps--;
++				} else {
++					WARN_ON_ONCE(1);
++				}
+ 				break;
+ 			case DEV_PATH_BR_VLAN_KEEP:
+ 				break;
+@@ -361,6 +367,7 @@
+ 		fl.u.ip4.saddr = ct->tuplehash[!dir].tuple.src.u3.ip;
+ 		fl.u.ip4.flowi4_oif = nft_in(pkt)->ifindex;
+ 		fl.u.ip4.flowi4_iif = this_dst->dev->ifindex;
++		/* DSCP from skb TOS field; aligned with nf_flow_table_path.c lookup keys. */
+ 		fl.u.ip4.flowi4_tos = ip_hdr(pkt->skb)->tos & INET_DSCP_MASK;
+ 		fl.u.ip4.flowi4_mark = pkt->skb->mark;
+ 		fl.u.ip4.flowi4_flags = FLOWI_FLAG_ANYSRC;
