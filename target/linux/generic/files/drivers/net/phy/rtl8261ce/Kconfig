@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config RTL8261CE_PHY
+	tristate "Realtek RTL8261CE PHY"
+	depends on HWMON
+	select PHY_COMMON_PROPS
+	help
+	  Enable support for the Realtek RTL8261CE 10GBASE-T PHY.
+
+	  The driver uses the vendor initialisation sequence recovered from
+	  rtk-rtl8261ce-phy.ko and applies board-level SerDes polarity through
+	  the RTL8261CE-specific OCP register path.
