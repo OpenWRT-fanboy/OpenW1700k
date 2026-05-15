@@ -1,0 +1,30 @@
+From: Jihong Min <hurryman2212@gmail.com>
+Date: Thu, 14 May 2026 21:39:08 +0900
+Subject: [PATCH] net: phy: realtek: add RTL8261CE vendor PHY driver
+
+Add a standalone vendor-style RTL8261CE PHY driver directory.
+
+Assisted-by: Codex:gpt-5.5
+Signed-off-by: Jihong Min <hurryman2212@gmail.com>
+---
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -459,6 +459,8 @@ config QSEMI_PHY
+ 
+ source "drivers/net/phy/realtek/Kconfig"
+ 
++source "drivers/net/phy/rtl8261ce/Kconfig"
++
+ config RENESAS_PHY
+ 	tristate "Renesas PHYs"
+ 	help
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -106,6 +106,7 @@ obj-$(CONFIG_NXP_TJA11XX_PHY)	+= nxp-tja
+ obj-y				+= qcom/
+ obj-$(CONFIG_QSEMI_PHY)		+= qsemi.o
+ obj-$(CONFIG_REALTEK_PHY)	+= realtek/
++obj-$(CONFIG_RTL8261CE_PHY)	+= rtl8261ce/
+ obj-$(CONFIG_RENESAS_PHY)	+= uPD60620.o
+ obj-$(CONFIG_ROCKCHIP_PHY)	+= rockchip.o
+ obj-$(CONFIG_SMSC_PHY)		+= smsc.o

@@ -575,6 +575,22 @@ endef
 $(eval $(call KernelPackage,phy-realtek))
 
 
+define KernelPackage/phy-rtl8261ce
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Realtek RTL8261CE 10GBASE-T PHY driver
+   KCONFIG:=CONFIG_RTL8261CE_PHY
+   DEPENDS:=+kmod-libphy +kmod-hwmon-core
+   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8261ce/rtk-rtl8261ce-phy.ko
+   AUTOLOAD:=$(call AutoLoad,18,rtk-rtl8261ce-phy,1)
+endef
+
+define KernelPackage/phy-rtl8261ce/description
+   Supports the Realtek RTL8261CE 10GBASE-T PHY.
+endef
+
+$(eval $(call KernelPackage,phy-rtl8261ce))
+
+
 define KernelPackage/phy-rtl8261n
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Realtek RTL8261N NBASE-T PHY driver
