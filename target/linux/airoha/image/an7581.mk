@@ -103,7 +103,7 @@ define Device/gemtek_w1700k-ubi
        the end of flash. A reinstall including corrected chainloader is needed.
   DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk kmod-i2c-an7581 \
 		    kmod-hwmon-nct7802 kmod-mt7996-firmware wpad-basic-mbedtls \
-		    rtl826x-firmware
+		    rtl826x-firmware kmod-phy-rtl8261ce
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
