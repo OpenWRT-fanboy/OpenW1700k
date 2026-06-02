@@ -6,10 +6,10 @@ PKG_RELEASE=1
 PKG_LICENSE:=BSD-3-Clause-Clear
 PKG_LICENSE_FILES:=
 
-PKG_SOURCE_URL:=https://github.com/openwrt/mt76
+PKG_SOURCE_URL:=https://github.com/OpenWRT-fanboy/mt76-firmware
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2026-06-01
-PKG_SOURCE_VERSION:=f5f14a0174547a80905affdaca0af5da75e59a2c
+PKG_SOURCE_VERSION:=6c7a165127f7d2c73de08b91a05fea3acb8cdd3a
 PKG_MIRROR_HASH:=skip
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
