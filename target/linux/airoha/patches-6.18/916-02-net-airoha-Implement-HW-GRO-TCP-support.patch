@@ -553,8 +553,8 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 -			      NETIF_F_HW_TC;
 -	netdev->features |= netdev->hw_features;
 -	netdev->vlan_features = netdev->hw_features;
-+	netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_LRO;
-+	netdev->features |= AIROHA_HW_FEATURES;
++	netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_GRO_HW;
++	netdev->features |= AIROHA_HW_FEATURES | NETIF_F_GRO_HW;
 +	netdev->vlan_features = AIROHA_HW_FEATURES;
  	SET_NETDEV_DEV(netdev, eth->dev);
  
