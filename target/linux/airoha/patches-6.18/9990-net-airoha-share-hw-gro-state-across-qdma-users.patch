@@ -1,0 +1,161 @@
+From: Jihong Min <hurryman2212@gmail.com>
+Date: Mon, 27 Jul 2026 14:00:00 +0900
+Subject: [PATCH] net: airoha: share HW GRO state across QDMA users
+
+Hardware LRO is configured per QDMA, while feature state is exposed on
+each netdev. Refusing a second netdev prevents the EN7581 DSA conduit
+from being opened when another GDM device on the same QDMA has HW GRO
+enabled.
+
+Allow all devices sharing a QDMA to operate while LRO is enabled. Keep
+their NETIF_F_GRO_HW wanted state synchronized so that changing the
+feature on any one of them changes the QDMA-wide setting consistently.
+
+Also fix the sibling walk to use each GDM port rather than repeatedly
+walking the initiating device's port.
+
+Assisted-by: Codex:gpt-5.6
+Signed-off-by: Jihong Min <hurryman2212@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 57 +++++++++++++-----------
+ drivers/net/ethernet/airoha/airoha_eth.h |  1 +
+ 2 files changed, 31 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2045,13 +2045,20 @@ static void airoha_update_hw_stats(struc
+ 	spin_unlock(&port->lock);
+ }
+ 
+-static void airoha_update_netdev_features(struct airoha_gdm_dev *dev)
++static void
++airoha_sync_qdma_gro_features(struct airoha_gdm_dev *dev,
++			      netdev_features_t features)
+ {
++	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
+ 	struct airoha_eth *eth = dev->eth;
+ 	int i;
+ 
++	if (qdma->syncing_gro_features)
++		return;
++
++	qdma->syncing_gro_features = true;
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+-		struct airoha_gdm_port *port = dev->port;
++		struct airoha_gdm_port *port = eth->ports[i];
+ 		int j;
+ 
+ 		if (!port)
+@@ -2069,12 +2076,15 @@ static void airoha_update_netdev_feature
+ 				continue;
+ 
+ 			netdev = netdev_from_priv(iter_dev);
+-			if (netdev->reg_state != NETREG_REGISTERED)
++			if (READ_ONCE(netdev->reg_state) != NETREG_REGISTERED)
+ 				continue;
+ 
++			netdev->wanted_features &= ~NETIF_F_GRO_HW;
++			netdev->wanted_features |= features & NETIF_F_GRO_HW;
+ 			netdev_update_features(netdev);
+ 		}
+ 	}
++	qdma->syncing_gro_features = false;
+ }
+ 
+ static void airoha_qdma_start(struct airoha_qdma *qdma)
+@@ -2138,12 +2148,6 @@ static int airoha_dev_open(struct net_de
+ 	qdma = airoha_qdma_deref(dev);
+ 	qdma_id = qdma - &eth->qdma[0];
+ 
+-	if (qdma->users && airoha_fe_lro_is_enabled(eth, qdma_id)) {
+-		netdev_warn(netdev, "required to disable HW GRO on QDMA%d\n",
+-			    qdma_id);
+-		return -EBUSY;
+-	}
+-
+ 	err = phylink_of_phy_connect(dev->phylink, netdev->dev.of_node, 0);
+ 	if (err) {
+ 		netdev_err(netdev, "could not attach PHY: %d\n", err);
+@@ -2176,11 +2180,12 @@ static int airoha_dev_open(struct net_de
+ 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(port->id),
+ 				    pse_port);
+ 
+-	if (netdev->features & NETIF_F_GRO_HW)
++	qdma = airoha_qdma_deref(dev);
++	qdma_id = qdma - &eth->qdma[0];
++	if ((netdev->features & NETIF_F_GRO_HW) &&
++	    !airoha_fe_lro_is_enabled(eth, qdma_id))
+ 		airoha_dev_lro_enable(dev);
+ 
+-	airoha_update_netdev_features(dev);
+-
+ 	return 0;
+ }
+ 
+@@ -2204,7 +2209,6 @@ static int airoha_dev_stop(struct net_de
+ 					    REG_GDM_FWD_CFG(port->id),
+ 					    FE_PSE_PORT_DROP);
+ 	airoha_qdma_stop(qdma);
+-	airoha_update_netdev_features(dev);
+ 
+ 	phylink_stop(dev->phylink);
+ 	phylink_disconnect_phy(dev->phylink);
+@@ -2528,19 +2532,6 @@ int airoha_get_fe_port(struct airoha_gdm
+ 					   : port->id;
+ }
+ 
+-static netdev_features_t airoha_dev_fix_features(struct net_device *netdev,
+-						 netdev_features_t features)
+-{
+-	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+-	struct airoha_qdma *qdma;
+-
+-	qdma = airoha_qdma_deref(dev);
+-	if (qdma->users > 1)
+-		features &= ~NETIF_F_GRO_HW;
+-
+-	return features;
+-}
+-
+ static int airoha_dev_set_features(struct net_device *netdev,
+ 				   netdev_features_t features)
+ {
+@@ -2549,7 +2540,7 @@ static int airoha_dev_set_features(struc
+ 	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
+ 	int qdma_id = qdma - &dev->eth->qdma[0];
+ 
+-	if (!(diff & NETIF_F_GRO_HW))
++	if (!(diff & NETIF_F_GRO_HW) || qdma->syncing_gro_features)
+ 		return 0;
+ 
+ 	if (features & NETIF_F_GRO_HW)
+@@ -2557,6 +2548,11 @@ static int airoha_dev_set_features(struc
+ 	else
+ 		airoha_fe_lro_disable(dev->eth, qdma_id);
+ 
++	/* LRO is a QDMA-wide resource, so expose one coherent feature state
++	 * on every netdev using this QDMA.
++	 */
++	airoha_sync_qdma_gro_features(dev, features);
++
+ 	return 0;
+ }
+ 
+@@ -3635,7 +3631,6 @@ static const struct net_device_ops airoh
+ 	.ndo_stop		= airoha_dev_stop,
+ 	.ndo_change_mtu		= airoha_dev_change_mtu,
+ 	.ndo_select_queue	= airoha_dev_select_queue,
+-	.ndo_fix_features	= airoha_dev_fix_features,
+ 	.ndo_set_features	= airoha_dev_set_features,
+ 	.ndo_start_xmit		= airoha_dev_xmit,
+ 	.ndo_get_stats64        = airoha_dev_get_stats64,
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -550,6 +550,7 @@ struct airoha_qdma {
+ 	void __iomem *regs;
+ 
+ 	int users;
++	bool syncing_gro_features;
+ 
+ 	struct airoha_irq_bank irq_banks[AIROHA_MAX_NUM_IRQ_BANKS];
+ 
