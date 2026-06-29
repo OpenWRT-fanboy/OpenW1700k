@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/drivers/tty/serial/8250/8250_en7523.c
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,112 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha EN7523 driver.
@@ -42,35 +42,51 @@
 + *
 + * Selecting divider needs to fulfill
 + * 1.8432 MHz <= xindiv_clk <= APB clock / 2
-+ * The clocks are unknown but a divider of value 1 did not work.
++ *
++ * The regular UART XINCLKDR register is an index into [1,2,4,8,10,12,16,20].
++ * The HSUART (airoha,en7523-hsuart) uses the XINCLKDR value as a direct
++ * clock divisor instead. Separate tables are used for each port type.
 + *
 + * Optimally the XYD, BRD and XINCLK_DIVCNT registers could be searched to
 + * find values that gives the least error for every baud rate. But searching
 + * the space takes time and in practise only a few rates are of interest.
 + * With some value combinations not working a tested subset is used giving
-+ * a usable range from 110 to 460800 baud.
++ * a usable range from 110 to 921600 baud.
 + */
 +
-+#define CLOCK_DIV_TAB_ELEMS 3
 +#define XYD_Y 65000
 +#define XINDIV_CLOCK 20000000
 +#define UART_BRDL_20M 0x01
 +#define UART_BRDH_20M 0x00
 +
-+static int clock_div_tab[] = { 10, 4, 2};
-+static int clock_div_reg[] = {  4, 2, 1};
++/* Regular UART: XINCLKDR is an index into [1,2,4,8,10,12,16,20] */
++static const int uart_div_tab[] = {10, 4, 2, 1};
++static const int uart_div_reg[] = { 4, 2, 1, 0};
++
++/* HSUART: XINCLKDR value is the clock divisor directly */
++static const int hsuart_div_tab[] = {4, 2, 1};
++static const int hsuart_div_reg[] = {4, 2, 1};
 +
 +
-+int en7523_set_uart_baud_rate (struct uart_port *port, unsigned int baud)
++int en7523_set_uart_baud_rate(struct uart_port *port, unsigned int baud)
 +{
 +	struct uart_8250_port *up = up_to_u8250p(port);
++	const int *div_tab, *div_reg;
 +	unsigned int xyd_x, nom, denom;
-+	int i;
++	int i, elems;
++
++	if (of_device_is_compatible(port->dev->of_node, "airoha,en7523-hsuart")) {
++		div_tab = hsuart_div_tab;
++		div_reg = hsuart_div_reg;
++		elems = ARRAY_SIZE(hsuart_div_tab);
++	} else {
++		div_tab = uart_div_tab;
++		div_reg = uart_div_reg;
++		elems = ARRAY_SIZE(uart_div_tab);
++	}
 +
 +	/* set DLAB to access the baud rate divider registers (BRDH, BRDL) */
 +	serial_port_out(port, UART_LCR, up->lcr | UART_LCR_DLAB);
-+
-+	/* set baud rate calculation defaults */
 +
 +	/* set BRDIV ([BRDH,BRDL]) to 1 */
 +	serial_port_out(port, UART_BRDL, UART_BRDL_20M);
@@ -78,16 +94,16 @@
 +
 +	/* calculate XYD_x and XINCLKDR register */
 +
-+	for (i = 0 ; i < CLOCK_DIV_TAB_ELEMS ; i++) {
-+		denom = (XINDIV_CLOCK/40) / clock_div_tab[i];
++	for (i = 0; i < elems; i++) {
++		denom = (XINDIV_CLOCK/40) / div_tab[i];
 +		nom = (baud * (XYD_Y/40));
 +		xyd_x = ((nom/denom) << 4);
 +		if (xyd_x < XYD_Y) break;
 +	}
-+	if (i >= CLOCK_DIV_TAB_ELEMS)
-+		i = CLOCK_DIV_TAB_ELEMS - 1;
++	if (i >= elems)
++		i = elems - 1;
 +
-+	serial_port_out(port, UART_XINCLKDR, clock_div_reg[i]);
++	serial_port_out(port, UART_XINCLKDR, div_reg[i]);
 +	serial_port_out(port, UART_XYD, (xyd_x<<16) | XYD_Y);
 +
 +	/* unset DLAB */
@@ -99,11 +115,12 @@
 +EXPORT_SYMBOL_GPL(en7523_set_uart_baud_rate);
 --- a/drivers/tty/serial/8250/8250_of.c
 +++ b/drivers/tty/serial/8250/8250_of.c
-@@ -353,6 +353,7 @@ static const struct of_device_id of_plat
+@@ -353,6 +353,8 @@ static const struct of_device_id of_plat
  	{ .compatible = "ti,da830-uart", .data = (void *)PORT_DA830, },
  	{ .compatible = "nuvoton,wpcm450-uart", .data = (void *)PORT_NPCM, },
  	{ .compatible = "nuvoton,npcm750-uart", .data = (void *)PORT_NPCM, },
-+	{ .compatible = "airoha,en7523-uart", .data = (void *)PORT_AIROHA, },
++	{ .compatible = "airoha,en7523-uart",   .data = (void *)PORT_AIROHA, },
++	{ .compatible = "airoha,en7523-hsuart", .data = (void *)PORT_AIROHA, },
  	{ /* end of list */ },
  };
  MODULE_DEVICE_TABLE(of, of_platform_serial_table);
@@ -124,14 +141,16 @@
  };
  
  /* Uart divisor latch read */
-@@ -2769,6 +2777,12 @@ serial8250_do_set_termios(struct uart_po
+@@ -2769,6 +2777,14 @@ serial8250_do_set_termios(struct uart_po
  	baud = serial8250_get_baud_rate(port, termios, old);
  	quot = serial8250_get_divisor(port, baud, &frac);
  
 +#ifdef CONFIG_SERIAL_8250_AIROHA
 +	/* Airoha SoCs have custom registers for baud rate settings */
-+	if (port->type == PORT_AIROHA)
++	if (port->type == PORT_AIROHA) {
 +		en7523_set_uart_baud_rate(port, baud);
++		quot = 1;
++	}
 +#endif
 +
  	/*
