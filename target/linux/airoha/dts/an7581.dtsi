@@ -408,18 +408,18 @@
 			reg-io-width = <4>;
 			reg-shift = <2>;
 			interrupts = <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>;
-			clock-frequency = <7372800>;
+			clock-frequency = <20000000>;
 
 			status = "disabled";
 		};
 
 		hsuart3: serial@1fbe1000 {
-			compatible = "airoha,en7523-uart";
+			compatible = "airoha,en7523-hsuart";
 			reg = <0x0 0x1fbe1000 0x0 0x40>;
 			reg-io-width = <4>;
 			reg-shift = <2>;
 			interrupts = <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH>;
-			clock-frequency = <7372800>;
+			clock-frequency = <20000000>;
 
 			status = "disabled";
 		};
@@ -438,7 +438,7 @@
 			reg-io-width = <4>;
 			reg-shift = <2>;
 			interrupts = <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
-			clock-frequency = <7372800>;
+			clock-frequency = <20000000>;
 
 			status = "disabled";
 		};
@@ -449,7 +449,7 @@
 			reg-io-width = <4>;
 			reg-shift = <2>;
 			interrupts = <GIC_SPI 18 IRQ_TYPE_LEVEL_HIGH>;
-			clock-frequency = <7372800>;
+			clock-frequency = <20000000>;
 
 			status = "disabled";
 		};
