@@ -1,0 +1,29 @@
+#!/bin/sh
+
+BRIDGE="${BR_HW_BRIDGE:-br-lan}"
+SYS_NET="${BR_HW_SYS_NET:-/sys/class/net}"
+
+case "$ACTION" in
+	add|remove) ;;
+	*) exit 0 ;;
+esac
+[ -n "$DEVICENAME" ] || exit 0
+case "$DEVICENAME" in
+	lo|"$BRIDGE") exit 0 ;;
+esac
+
+if [ -L "${SYS_NET}/${DEVICENAME}/master" ] || [ -e "${SYS_NET}/${DEVICENAME}/master" ]; then
+	master=$(readlink "${SYS_NET}/${DEVICENAME}/master" 2>/dev/null)
+	[ "${master##*/}" = "$BRIDGE" ] || exit 0
+fi
+
+mkdir -p /var/lock 2>/dev/null
+
+(
+	exec 9>/var/lock/bridge-hw-offload.lock
+	flock -n 9 || exit 0
+	sleep 3
+	/etc/init.d/firewall reload >/dev/null 2>&1
+) &
+
+exit 0
