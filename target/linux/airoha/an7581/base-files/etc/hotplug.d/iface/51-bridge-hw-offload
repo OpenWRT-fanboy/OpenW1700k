@@ -1,0 +1,42 @@
+#!/bin/sh
+
+[ "$ACTION" = ifup ] || exit 0
+[ "$INTERFACE" = lan ] || exit 0
+
+SYS_NET="${BR_HW_SYS_NET:-/sys/class/net}"
+SETTLE_TIMEOUT="${BR_HW_SETTLE_TIMEOUT:-120}"
+SETTLE_INTERVAL="${BR_HW_SETTLE_INTERVAL:-5}"
+SETTLE_STABLE="${BR_HW_SETTLE_STABLE:-3}"
+RECHECK1="${BR_HW_RECHECK1_DELAY:-40}"
+RECHECK2="${BR_HW_RECHECK2_DELAY:-70}"
+
+mkdir -p /var/lock 2>/dev/null
+
+(
+	exec 9>/var/lock/bridge-hw-offload.lock
+	flock -n 9 || exit 0
+	seen=""; prev=""; stable=0; waited=0
+	while [ "$waited" -lt "$SETTLE_TIMEOUT" ]; do
+		cur=$(ls "${SYS_NET}/br-lan/brif" 2>/dev/null | sort | tr '\n' ' ')
+		[ -n "$cur" ] && seen=1
+		if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then
+			stable=$((stable + 1))
+			[ "$stable" -ge "$SETTLE_STABLE" ] && break
+		else
+			stable=0
+		fi
+		prev="$cur"
+		sleep "$SETTLE_INTERVAL"; waited=$((waited + SETTLE_INTERVAL))
+	done
+	if [ -z "$seen" ]; then
+		logger -t bridge-hw-offload "no bridge ports seen, skipping reload"
+		exit 0
+	fi
+	/etc/init.d/firewall reload >/dev/null 2>&1
+	sleep "$RECHECK1"
+	/etc/init.d/firewall reload >/dev/null 2>&1
+	sleep "$RECHECK2"
+	/etc/init.d/firewall reload >/dev/null 2>&1
+) &
+
+exit 0
