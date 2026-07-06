@@ -1,0 +1,32 @@
+From: Gilly1970 <gilroyscott@hotmail.com>
+Subject: [PATCH] net: airoha: don't HW-offload IPv6 uplink flows that need VLAN edit
+
+Narrow variant of the IPv6+VLAN black-hole fix. The AN7581 PPE black-holes
+hardware-offloaded IPv6 routed flows that need VLAN tag insertion on the
+WAN *uplink* (the GDM2-loopback path, pse_port=2). LAN-side VLANs egress via
+a direct PSE port, never touch the loopback, and are reported working on both
+HW.1.x and HW.2.x. Only decline offload for the uplink case, keeping
+LAN-side IPv6+VLAN and all IPv4/untagged-IPv6 fully hardware-accelerated.
+
+Bailing out with -EOPNOTSUPP keeps the affected flow on the software
+flowtable, which forwards it at line rate.
+
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -387,10 +387,15 @@
+ 			if (dsa_port >= 0 || airoha_is_lan_gdm_dev(dev))
+ 				pse_port = port->id == 4 ? FE_PSE_PORT_GDM4
+ 							 : port->id;
+-			else
++			else {
++				/* IPv6 route + VLAN black-holes on the WAN uplink (GDM2 loopback) */
++				if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T &&
++				    data->vlan.num)
++					return -EOPNOTSUPP;
+ 				pse_port = 2; /* uplink relies on GDM2
+ 					       * loopback
+ 					       */
++			}
+ 
+ 			/* For traffic forwarded to DSA devices select QoS
+ 			 * channel according to the DSA user port index, rely
