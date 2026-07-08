@@ -1,0 +1,20 @@
+--- a/defenvs/an7581_w1700k_env
++++ b/defenvs/an7581_w1700k_env
+@@ -7,5 +7,5 @@
+ bootled_pwr=status:red
+ bootled_rec=status:blue
+-boot_production=ubi part ubi && ubi read $loadaddr fit && bootm $loadaddr#$bootconf
++boot_production=run check_lan_leds ; ubi part ubi && ubi read $loadaddr fit && bootm $loadaddr#$bootconf
+ boot_recovery=led $bootled_rec on ; run ubi_read_recovery ; bootm $initaddr#$bootconf ; led $bootled_rec off
+ boot_tftp=tftpboot $initaddr $bootfile && bootm $initaddr#$bootconf
+@@ -36,3 +36,10 @@
+ #   setenv failsafe_part ubi; saveenv
+ # Then upload the sysupgrade.itb to flash to UBI.
+ failsafe_part=ubi
++led_lan3_green=lan3_green
++led_lan3_yellow=lan3_yellow
++led_lan4_green=lan4_green
++led_lan4_yellow=lan4_yellow
++link_lan_leds=led $led_lan3_green on ; led $led_lan3_yellow on ; led $led_lan4_green on ; led $led_lan4_yellow on
++off_lan_leds=led $led_lan3_green off ; led $led_lan3_yellow off ; led $led_lan4_green off ; led $led_lan4_yellow off
++check_lan_leds=run link_lan_leds

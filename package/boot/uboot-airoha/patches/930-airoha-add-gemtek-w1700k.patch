@@ -1,7 +1,7 @@
 From d6402eadaa56494b382e389d739b9f80d6883788 Mon Sep 17 00:00:00 2001
 From: Kenneth Kasilag <kenneth@kasilag.me>
 Date: Sat, 21 Feb 2026 21:49:46 +0000
-Subject: [PATCH] an7581: add uboot chainloader for w1700k
+Subject: [PATCH] an7581: add uboot chainloader and configure LAN LEDs for w1700k
 
 Due to issues surrounding the implementation of the vendor BMT/BBT
 on Airoha, upstream ATF + uboot has switched to UBI flash partitions.
@@ -37,7 +37,7 @@ Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
  configs/an7581_w1700k_defconfig                     | 109 ++++++++++
  defenvs/an7581_w1700k_env                           |  21 ++
  dts/upstream/src/arm64/airoha/an7581-w1700k-ubi.dts |  87 +++++
- 3 files changed, 215 insertions(+), 0 deletions(-)
+ 3 files changed, 289 insertions(+), 0 deletions(-)
  create mode 100644 configs/an7581_w1700k_defconfig
  create mode 100644 defenvs/an7581_w1700k_env
  create mode 100644 dts/upstream/src/arm64/airoha/an7581-w1700k-ubi.dts
@@ -124,7 +124,7 @@ Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
 +CONFIG_CMD_MDIO=y
 +CONFIG_PHY=y
 +CONFIG_PINCTRL=y
-+CONFIG_PINCONF=y
++CONFIG_PINCTRL_AIROHA_AN7581=y
 +CONFIG_POWER_DOMAIN=y
 +CONFIG_DM_REGULATOR=y
 +CONFIG_DM_REGULATOR_FIXED=y
@@ -186,7 +186,7 @@ Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
 +ubi_read_recovery=ubi check recovery && ubi read $initaddr recovery
 --- /dev/null
 +++ b/dts/upstream/src/arm64/airoha/an7581-w1700k-ubi.dts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,155 @@
 +// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 +/dts-v1/;
 +
@@ -249,6 +249,30 @@ Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
 +		led_status_white {
 +			label = "status:white";
 +			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led_lan3_green {
++			label = "lan3_green";
++			gpios = <&en7581_pinctrl 9 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led_lan3_yellow {
++			label = "lan3_yellow";
++			gpios = <&en7581_pinctrl 10 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led_lan4_green {
++			label = "lan4_green";
++			gpios = <&en7581_pinctrl 27 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led_lan4_yellow {
++			label = "lan4_yellow";
++			gpios = <&en7581_pinctrl 28 GPIO_ACTIVE_LOW>;
 +			default-state = "off";
 +		};
 +	};
@@ -318,3 +342,5 @@ Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
 +&gdm1 {
 +	status = "okay";
 +};
+-- 
+2.51.0

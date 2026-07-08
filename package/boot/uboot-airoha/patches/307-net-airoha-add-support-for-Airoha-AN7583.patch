@@ -1,23 +1,20 @@
 From 8e7a468d4e3e55d64cbfe5576092f7ecb3eaa0f1 Mon Sep 17 00:00:00 2001
 From: Christian Marangi <ansuelsmth@gmail.com>
 Date: Mon, 19 May 2025 14:29:53 +0200
-Subject: [PATCH 18/29] net: airoha: add support for Airoha AN7583
+Subject: [PATCH 18/29] net: airoha: add AN7583 support and enable PHY LEDs for all SoCs
 
-Add support for Ethernet controller present in Airoha AN7583. This
-follow the same implementation of Airoha AN7581 with the only difference
-of having a different reset number and a different logic to reach the
-SCU node.
+Add support for Ethernet controller present in Airoha AN7583. Extend
+the switch init to also cover EN7581/AN7581 with BMCR_PDOWN clearing and
+PHY LED control register programming for all internal switch PHYs.
 
-Generalize the driver for these 2 part to account for these minor
-difference.
-
-The switch init part also required some care as the Switch Internal PHY
-enable BMCR_PDOWN by default and tweak to GEPHY_CONN_CFG is also needed.
+For each internal switch PHY the BMCR_PDOWN bit is cleared to power up
+the PHY, and register 0x1b (PHY LED control) is written to enable both
+LED0 and LED1 outputs.
 
 Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 ---
- drivers/net/airoha_eth.c | 91 ++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 91 insertions(+)
+ drivers/net/airoha_eth.c | 107 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 107 insertions(+)
 
 diff --git a/drivers/net/airoha_eth.c b/drivers/net/airoha_eth.c
 index e5d39b95cc5..863c35647b6 100644
@@ -89,14 +86,12 @@ index e5d39b95cc5..863c35647b6 100644
  
  static inline dma_addr_t dma_map_unaligned(void *vaddr, size_t len,
  					   enum dma_data_direction dir)
-@@ -809,6 +838,59 @@ static int airoha_switch_init(struct udevice *dev, struct airoha_eth *eth)
+@@ -809,6 +838,81 @@ static int airoha_switch_init(struct udevice *dev, struct airoha_eth *eth)
  			 FIELD_PREP(SWITCH_PHY_END_ADDR, 0xc) |
  			 FIELD_PREP(SWITCH_PHY_ST_ADDR, 0x8));
  
-+	/* AN7583 require tweak to GEPHY_CONN_CFG and clear PHY BMCR_PDOWN */
++	/* AN7583 require tweak to GEPHY_CONN_CFG */
 +	if (!strcmp(data->switch_compatible, "airoha,an7583-switch")) {
-+		int i;
-+
 +		airoha_switch_rmw(eth, SWITCH_GEPHY_CONN_CFG,
 +				  SWITCH_DPHY_CKIN_SEL |
 +				  SWITCH_PHY_CORE_REG_CLK_SEL |
@@ -104,8 +99,15 @@ index e5d39b95cc5..863c35647b6 100644
 +				  SWITCH_DPHY_CKIN_SEL |
 +				  SWITCH_PHY_CORE_REG_CLK_SEL |
 +				  FIELD_PREP(SWITCH_ETHER_AFE_PWD, 0));
++	}
 +
-+		/* Disable BMCR_PDOWN for every PHY */
++	/* For AN7581 and AN7583, clear BMCR_PDOWN and enable
++	 * PHY LED control for each internal switch PHY.
++	 */
++	if (!strcmp(data->switch_compatible, "airoha,an7583-switch") ||
++	    !strcmp(data->switch_compatible, "airoha,en7581-switch")) {
++		int i;
++
 +		for (i = 0; i < AIROHA_MAX_NUM_SWITCH_PORT; i++) {
 +			int try;
 +			u32 val;
@@ -135,6 +137,23 @@ index e5d39b95cc5..863c35647b6 100644
 +					 FIELD_PREP(SWITCH_PBUS_PHY_PORTADDR, i) |
 +					 FIELD_PREP(SWITCH_PBUS_PHY_REGADDR,
 +						    AIROHA_PBUS_C22_MASK | MII_BMCR));
++
++			for (try = 0; try < AIROHA_MAX_PBUS_TRY; try++) {
++				val = airoha_switch_rr(eth, SWITCH_PBUS_PHY_IAC);
++				if (!(val & SWITCH_PBUS_PHY_START))
++					break;
++
++				udelay(AIROHA_PBUS_SLEEP);
++			}
++
++			/* Enable LED0 and LED1 with activity blink mode per MT7531 datasheet */
++			airoha_switch_wr(eth, SWITCH_PBUS_PHY_IAWD, 0x000b);
++			airoha_switch_wr(eth, SWITCH_PBUS_PHY_IAC,
++					 SWITCH_PBUS_PHY_START |
++					 SWITCH_PBUS_PHY_CMD_WRITE |
++					 FIELD_PREP(SWITCH_PBUS_PHY_PORTADDR, i) |
++					 FIELD_PREP(SWITCH_PBUS_PHY_REGADDR,
++						    AIROHA_PBUS_C22_MASK | 0x21));
 +
 +			for (try = 0; try < AIROHA_MAX_PBUS_TRY; try++) {
 +				val = airoha_switch_rr(eth, SWITCH_PBUS_PHY_IAC);
@@ -174,4 +193,3 @@ index e5d39b95cc5..863c35647b6 100644
  
 -- 
 2.53.0
-
