@@ -1,0 +1,107 @@
+From b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c Mon Sep 17 00:00:00 2001
+From: OpenWrt Contributor
+Date: Wed, 8 Jul 2026 00:00:00 +0000
+Subject: [PATCH] an7581_w1700k: add -u-boot.dtsi with switch ports and gsw phys
+
+Add a u-boot.dtsi overlay for W1700K that extends the root-level
+switch node from an7581-u-boot.dtsi with:
+- gsw_port1/2 (lan3/lan4) and CPU port6 inside ports sub-node
+- gsw_phy1/2 (PHY addresses 9, 10) inside the mdio bus
+- mdio pinmux for the switch
+
+This allows U-Boot to find the switch ports and internal PHYs
+for MDIO bus probing.
+
+Signed-off-by: OpenWrt Contributor
+---
+ .../dts/an7581-w1700k-ubi-u-boot.dtsi  | 81 +++++++++++++++++++++++++
+ 1 file changed, 81 insertions(+)
+ create mode 100644 arch/arm/dts/an7581-w1700k-ubi-u-boot.dtsi
+
+diff --git a/arch/arm/dts/an7581-w1700k-ubi-u-boot.dtsi b/arch/arm/dts/an7581-w1700k-ubi-u-boot.dtsi
+new file mode 100644
+index 00000000..e7f6a5b4
+--- /dev/null
++++ b/arch/arm/dts/an7581-w1700k-ubi-u-boot.dtsi
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++
++#include "an7581-u-boot.dtsi"
++
++&switch {
++	status = "okay";
++
++	pinctrl-names = "default";
++	pinctrl-0 = <&mdio_pins>;
++
++	ports {
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		gsw_port1: port@1 {
++			reg = <1>;
++			phy-mode = "internal";
++			phy-handle = <&gsw_phy1>;
++			status = "okay";
++			label = "lan3";
++		};
++
++		gsw_port2: port@2 {
++			reg = <2>;
++			phy-mode = "internal";
++			phy-handle = <&gsw_phy2>;
++			status = "okay";
++			label = "lan4";
++		};
++
++		port@6 {
++			reg = <6>;
++			ethernet = <&gdm1>;
++			phy-mode = "internal";
++
++			fixed-link {
++				speed = <10000>;
++				full-duplex;
++				pause;
++			};
++		};
++	};
++};
++
++&mdio {
++	gsw_phy1: ethernet-phy@9 {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <9>;
++		phy-mode = "internal";
++		status = "okay";
++	};
++
++	gsw_phy2: ethernet-phy@a {
++		compatible = "ethernet-phy-ieee802.3-c22";
++		reg = <10>;
++		phy-mode = "internal";
++		status = "okay";
++	};
++};
++
++&en7581_pinctrl {
++	mdio_pins: mdio-pins {
++		mux {
++			function = "mdio";
++			groups = "mdio";
++		};
++
++		conf {
++			pins = "gpio2";
++			output-high;
++		};
++	};
++};
++
++&eth {
++	status = "okay";
++};
++
++&gdm1 {
++	status = "okay";
++};
