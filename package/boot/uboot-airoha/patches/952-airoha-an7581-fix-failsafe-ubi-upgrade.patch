@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenCode <opencode@ai>
+Date: Sun, 5 Jul 2026 09:00:00 +0000
+Subject: [PATCH] board: airoha: an7581: fix failsafe to use UBI upgrade
+
+The failsafe web UI was writing uploaded images directly to MTD
+partitions using 'mtd write', which corrupts UBI structures on
+NAND devices.
+
+Fix this by following OpenWrt's nand.sh upgrade pattern:
+- Detect UBI volumes ("ubi", "rootfs", or "recovery")
+- For UBI: attach the 'ubi' MTD partition, then use ubi write
+- For non-UBI: continue using mtd write for raw images
+
+This allows proper sysupgrade.itb uploads through the failsafe
+web UI without corrupting the NAND flash.
+
+Signed-off-by: OpenCode <opencode@ai>
+---
+ board/airoha/an7581/failsafe.c | 35 ++++++++++++++++++++---
+ 1 file changed, 28 insertions(+), 7 deletions(-)
+
+--- a/board/airoha/an7581/failsafe.c	2026-07-05 14:03:35.282036731 -1000
++++ b/board/airoha/an7581/failsafe.c	2026-07-05 17:54:44.424236399 -1000
+@@ -84,20 +84,42 @@
+ 	const char *part = failsafe_target_part();
+ 	char cmd[160];
+ 	int ret;
+-
+-	printf("\n*** Failsafe upgrade: %zu (0x%zx) bytes -> MTD '%s' ***\n\n",
++ 
++	printf("\n*** Failsafe upgrade: %zu (0x%zx) bytes -> '%s' ***\n\n",
+ 	       size, size, part);
+-
+-	mtd_probe_devices();
+-
+-	snprintf(cmd, sizeof(cmd), "mtd write %s 0x%lx 0x%lx",
+-		 part, (unsigned long)(uintptr_t)data, (unsigned long)size);
+-	ret = run_command(cmd, 0);
+-	if (ret) {
+-		printf("Failsafe: write '%s' failed (ret=%d)\n", part, ret);
+-		return -EIO;
++ 
++	if (strcmp(part, "ubi") == 0 || strcmp(part, "rootfs") == 0 || strcmp(part, "recovery") == 0) {
++		/* Target is a UBI volume */
++		const char *vol = (strcmp(part, "ubi") == 0) ? "fit" : part;
++		printf("Failsafe: writing image to UBI volume '%s'\n", vol);
++ 
++		/* Ensure UBI is attached to the 'ubi' MTD partition */
++		run_command("ubi part ubi", 0);
++ 
++		snprintf(cmd, sizeof(cmd), "ubi write 0x%lx %s 0x%lx",
++			 (unsigned long)(uintptr_t)data, vol, (unsigned long)size);
++		ret = run_command(cmd, 0);
++		if (ret) {
++			printf("Failsafe: ubi write '%s' failed (ret=%d)\n", vol, ret);
++			return -EIO;
++		}
++ 
++		printf("\n*** Failsafe UBI upgrade completed ***\n\n");
++	} else {
++		/* Target is a raw MTD partition: use mtd write */
++		printf("Failsafe: writing raw image to MTD '%s'\n", part);
++ 
++		mtd_probe_devices();
++		snprintf(cmd, sizeof(cmd), "mtd write %s 0x%lx 0x%lx",
++			 part, (unsigned long)(uintptr_t)data, (unsigned long)size);
++		ret = run_command(cmd, 0);
++		if (ret) {
++			printf("Failsafe: write '%s' failed (ret=%d)\n", part, ret);
++			return -EIO;
++		}
++ 
++		printf("\n*** Failsafe upgrade completed (MTD '%s') ***\n\n", part);
+ 	}
+-
+-	printf("\n*** Failsafe upgrade completed (MTD '%s') ***\n\n", part);
++ 
+ 	return 0;
+ }
