@@ -2,15 +2,19 @@ From: Ryan Chen <rchen14b@gmail.com>
 Date: Thu, 20 Mar 2026 10:00:00 -0500
 Subject: [PATCH 5/5] netfilter: nft_flow_offload: add VLAN passthrough support
 
-VLAN passthrough packets can be offloaded when bridge-nf-filter-vlan-tagged
-is enabled. When a packet has a VLAN tag and the bridge does not have VLAN
-filtering enabled (passthrough mode), record the VLAN encap info so the
-hardware flow offload entry includes the correct VLAN tag.
+VLAN passthrough packets can be offloaded when a bridge operates without
+VLAN filtering. When a packet has a VLAN tag and the bridge does not have
+VLAN filtering enabled (passthrough mode), record the VLAN encap info so
+the hardware flow offload entry includes the correct VLAN tag.
 
 Without this patch, VLAN-tagged bridged traffic cannot be offloaded by PPE
 because the VLAN encap information is missing from the flow entry.
 
-Enable with: echo 1 > /proc/sys/net/bridge/bridge-nf-filter-vlan-tagged
+In a bridge-family forward chain (NFPROTO_BRIDGE), nft_flow_offload
+already sees every bridged frame at L2 via the kernel's
+NF_HOOK(NFPROTO_BRIDGE, NF_BR_FORWARD) call in __br_forward, so VLAN-tagged
+frames reach the eval function regardless of any br_netfilter sysctl
+(which only governs the legacy inet/IP netfilter re-injection path).
 
 Based on a MediaTek SDK patch by Chak-Kei Lam <chak-kei.lam@mediatek.com>.
 Signed-off-by: Ryan Chen <rchen14b@gmail.com>
