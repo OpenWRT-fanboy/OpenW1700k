@@ -44,7 +44,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  obj-$(CONFIG_NETFILTER_XT_TARGET_LED) += xt_LED.o
 --- /dev/null
 +++ b/net/netfilter/xt_FLOWOFFLOAD.c
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,704 @@
 +/*
 + * Copyright (C) 2018-2021 Felix Fietkau <nbd@nbd.name>
 + *
@@ -384,6 +384,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +			case DEV_PATH_BR_VLAN_UNTAG:
 +				info->num_encaps--;
 +				break;
++			case DEV_PATH_BR_VLAN_KEEP_HW:
 +			case DEV_PATH_BR_VLAN_KEEP:
 +				break;
 +			}

@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH 10/10] bridge: Add filling forward path for port-to-port
+
+Allow br_fill_forward_path() to handle the case where ctx->dev is a
+bridge port rather than the bridge device itself. When the source device
+is a bridge port, look up the port structure and use its VLAN group
+for PVID resolution instead of the bridge's VLAN group.
+
+Signed-off-by: OpenWrt Build <build@openwrt.org>
+---
+ net/bridge/br_device.c    | 15 ++++++++++++---
+ net/bridge/br_private.h   |  6 ++++--
+ net/bridge/br_vlan.c      |  7 +++++--
+ 3 files changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/net/bridge/br_device.c b/net/bridge/br_device.c
+index 525d4ec..7c768c6 100644
+--- a/net/bridge/br_device.c
++++ b/net/bridge/br_device.c
+@@ -386,15 +386,20 @@ static int br_fill_forward_path(struct net_device_path_ctx *ctx,
+ 				struct net_device_path *path)
+ {
+ 	struct net_bridge_fdb_entry *f;
+-	struct net_bridge_port *dst;
++	struct net_bridge_port *dst, *src;
+ 	struct net_bridge *br;
+ 
+-	if (netif_is_bridge_port(ctx->dev))
+-		return -1;
+-
+-	br = netdev_priv(ctx->dev);
++	if (netif_is_bridge_port(ctx->dev)) {
++		src = br_port_get_rtnl(ctx->dev);
++		if (!src)
++			return -1;
++		br = src->br;
++	} else {
++		src = NULL;
++		br = netdev_priv(ctx->dev);
++	}
+ 
+-	br_vlan_fill_forward_path_pvid(br, ctx, path);
++	br_vlan_fill_forward_path_pvid(br, ctx, path, src);
+ 
+ 	f = br_fdb_find_rcu(br, ctx->daddr, path->bridge.vlan_id);
+ 	if (!f)
+diff --git a/net/bridge/br_private.h b/net/bridge/br_private.h
+index b9b2981..5d55149 100644
+--- a/net/bridge/br_private.h
++++ b/net/bridge/br_private.h
+@@ -1617,7 +1617,8 @@ bool br_vlan_can_enter_range(const struct net_bridge_vlan *v_curr,
+ 
+ void br_vlan_fill_forward_path_pvid(struct net_bridge *br,
+ 				    struct net_device_path_ctx *ctx,
+-				    struct net_device_path *path);
++				    struct net_device_path *path,
++				    struct net_bridge_port *p);
+ int br_vlan_fill_forward_path_mode(struct net_bridge *br,
+ 				   struct net_bridge_port *dst,
+ 				   struct net_device_path *path);
+@@ -1786,7 +1787,8 @@ static inline int nbp_get_num_vlan_infos(struct net_bridge_port *p,
+ 
+ static inline void br_vlan_fill_forward_path_pvid(struct net_bridge *br,
+ 						  struct net_device_path_ctx *ctx,
+-						  struct net_device_path *path)
++						  struct net_device_path *path,
++						  struct net_bridge_port *p)
+ {
+ }
+ 
+diff --git a/net/bridge/br_vlan.c b/net/bridge/br_vlan.c
+index ce9d189..070a380 100644
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -1446,7 +1446,8 @@ EXPORT_SYMBOL_GPL(br_vlan_get_pvid_rcu);
+ 
+ void br_vlan_fill_forward_path_pvid(struct net_bridge *br,
+ 				    struct net_device_path_ctx *ctx,
+-				    struct net_device_path *path)
++				    struct net_device_path *path,
++				    struct net_bridge_port *p)
+ {
+ 	struct net_bridge_vlan_group *vg;
+ 	int idx = ctx->num_vlans - 1;
+@@ -1457,7 +1458,10 @@ void br_vlan_fill_forward_path_pvid(struct net_bridge *br,
+ 	if (!br_opt_get(br, BROPT_VLAN_ENABLED))
+ 		return;
+ 
+-	vg = br_vlan_group_rcu(br);
++	if (p)
++		vg = nbp_vlan_group_rcu(p);
++	else
++		vg = br_vlan_group_rcu(br);
+ 
+ 	if (idx >= 0 &&
+ 	    ctx->vlan[idx].proto == br->vlan_proto) {
+-- 
+2.39.0
+

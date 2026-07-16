@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH 07/10] net: core: Add dev_fill_bridge_path()
+
+Add dev_fill_bridge_path() helper that fills the forward path for a
+bridge port by first calling the bridge master's ndo_fill_forward_path,
+then continuing the forward path walk via __dev_fill_forward_path.
+
+Signed-off-by: OpenWrt Build <build@openwrt.org>
+---
+ include/linux/netdevice.h |  2 ++
+ net/core/dev.c            | 29 +++++++++++++++++++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/include/linux/netdevice.h b/include/linux/netdevice.h
+index a318ce4..77868b3 100644
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -3348,6 +3348,8 @@ int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
+ 			  struct net_device_path_stack *stack);
+ int __dev_fill_forward_path(struct net_device_path_ctx *ctx, const u8 *daddr,
+ 			    struct net_device_path_stack *stack);
++int dev_fill_bridge_path(struct net_device_path_ctx *ctx,
++			 struct net_device_path_stack *stack);
+ struct net_device *dev_get_by_name(struct net *net, const char *name);
+ struct net_device *dev_get_by_name_rcu(struct net *net, const char *name);
+ struct net_device *__dev_get_by_name(struct net *net, const char *name);
+diff --git a/net/core/dev.c b/net/core/dev.c
+index 643f1b1..dd9f4e4 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -781,6 +781,35 @@ int __dev_fill_forward_path(struct net_device_path_ctx *ctx, const u8 *daddr,
+ }
+ EXPORT_SYMBOL_GPL(__dev_fill_forward_path);
+ 
++int dev_fill_bridge_path(struct net_device_path_ctx *ctx,
++			 struct net_device_path_stack *stack)
++{
++	const struct net_device *last_dev, *br_dev;
++	struct net_device_path *path;
++
++	if (!ctx->dev || !netif_is_bridge_port(ctx->dev))
++		return -1;
++
++	br_dev = netdev_master_upper_dev_get_rcu((struct net_device *)ctx->dev);
++	if (!br_dev || !br_dev->netdev_ops->ndo_fill_forward_path)
++		return -1;
++
++	last_dev = ctx->dev;
++	path = dev_fwd_path(stack);
++	if (!path)
++		return -1;
++
++	memset(path, 0, sizeof(struct net_device_path));
++	if (br_dev->netdev_ops->ndo_fill_forward_path(ctx, path) < 0)
++		return -1;
++
++	if (!ctx->dev || WARN_ON_ONCE(last_dev == ctx->dev))
++		return -1;
++
++	return __dev_fill_forward_path(ctx, ctx->daddr, stack);
++}
++EXPORT_SYMBOL_GPL(dev_fill_bridge_path);
++
+ int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
+ 			  struct net_device_path_stack *stack)
+ {
+-- 
+2.39.0
+
