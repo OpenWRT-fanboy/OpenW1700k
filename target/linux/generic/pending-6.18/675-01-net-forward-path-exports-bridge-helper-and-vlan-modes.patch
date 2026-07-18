@@ -1,0 +1,121 @@
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -119,6 +119,8 @@
+ 		     struct bridge_vlan_info *p_vinfo);
+ int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
+ 			 struct bridge_vlan_info *p_vinfo);
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto);
+ bool br_mst_enabled(const struct net_device *dev);
+ int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids);
+ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state);
+@@ -155,6 +157,7 @@
+ 	return -EINVAL;
+ }
+ 
++static inline u16 br_vlan_get_offload_info_rcu(const struct net_device *dev, const struct sk_buff *skb, __be16 *proto) { return 0; }
+ static inline bool br_mst_enabled(const struct net_device *dev)
+ {
+ 	return false;
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -3350,6 +3351,8 @@
+ int dev_fill_metadata_dst(struct net_device *dev, struct sk_buff *skb);
+ int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
+ 			  struct net_device_path_stack *stack);
++int __dev_fill_forward_path(struct net_device_path_ctx *ctx, const u8 *daddr,
++			    struct net_device_path_stack *stack);
+ struct net_device *dev_get_by_name(struct net *net, const char *name);
+ struct net_device *dev_get_by_name_rcu(struct net *net, const char *name);
+ struct net_device *__dev_get_by_name(struct net *net, const char *name);
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -1554,6 +1557,23 @@
+ }
+ EXPORT_SYMBOL_GPL(br_vlan_get_info_rcu);
+ 
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto)
++{
++	struct net_bridge_port *port = br_port_get_rcu(dev);
++	u16 vid = 0;
++
++	if (!port || !br_opt_get(port->br, BROPT_VLAN_ENABLED)) return 0;
++	if (skb_vlan_tag_present(skb)) {
++		*proto = skb->vlan_proto;
++		return skb_vlan_tag_get_id(skb);
++	}
++	br_vlan_get_pvid_rcu(dev, &vid);
++	*proto = vid ? port->br->vlan_proto : 0;
++	return vid;
++}
++EXPORT_SYMBOL_GPL(br_vlan_get_offload_info_rcu);
++
+ static int br_vlan_is_bind_vlan_dev(const struct net_device *dev)
+ {
+ 	return is_vlan_dev(dev) &&
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -744,44 +744,50 @@
+ 	return &stack->path[k];
+ }
+ 
+-int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
+-			  struct net_device_path_stack *stack)
++int __dev_fill_forward_path(struct net_device_path_ctx *ctx, const u8 *daddr,
++			    struct net_device_path_stack *stack)
+ {
+ 	const struct net_device *last_dev;
+-	struct net_device_path_ctx ctx = {
+-		.dev	= dev,
+-	};
+ 	struct net_device_path *path;
+ 	int ret = 0;
+ 
+-	memcpy(ctx.daddr, daddr, sizeof(ctx.daddr));
++	memcpy(ctx->daddr, daddr, sizeof(ctx->daddr));
+ 	stack->num_paths = 0;
+-	while (ctx.dev && ctx.dev->netdev_ops->ndo_fill_forward_path) {
+-		last_dev = ctx.dev;
++	while (ctx->dev && ctx->dev->netdev_ops->ndo_fill_forward_path) {
++		last_dev = ctx->dev;
+ 		path = dev_fwd_path(stack);
+ 		if (!path)
+ 			return -1;
+ 
+ 		memset(path, 0, sizeof(struct net_device_path));
+-		ret = ctx.dev->netdev_ops->ndo_fill_forward_path(&ctx, path);
++		ret = ctx->dev->netdev_ops->ndo_fill_forward_path(ctx, path);
+ 		if (ret < 0)
+ 			return -1;
+ 
+-		if (WARN_ON_ONCE(last_dev == ctx.dev))
++		if (WARN_ON_ONCE(last_dev == ctx->dev))
+ 			return -1;
+ 	}
+ 
+-	if (!ctx.dev)
++	if (!ctx->dev)
+ 		return ret;
+ 
+ 	path = dev_fwd_path(stack);
+ 	if (!path)
+ 		return -1;
+ 	path->type = DEV_PATH_ETHERNET;
+-	path->dev = ctx.dev;
++	path->dev = ctx->dev;
+ 
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(__dev_fill_forward_path);
++
++int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
++			  struct net_device_path_stack *stack)
++{
++	struct net_device_path_ctx ctx = { .dev = dev };
++
++	return __dev_fill_forward_path(&ctx, daddr, stack);
++}
+ EXPORT_SYMBOL_GPL(dev_fill_forward_path);
+ 
+ /* must be called under rcu_read_lock(), as we dont take a reference */
