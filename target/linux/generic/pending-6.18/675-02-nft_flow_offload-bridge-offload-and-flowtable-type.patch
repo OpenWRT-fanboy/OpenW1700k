@@ -1,0 +1,280 @@
+--- a/net/netfilter/nf_flow_table_inet.c
++++ b/net/netfilter/nf_flow_table_inet.c
+@@ -75,6 +75,8 @@
+ 	.owner		= THIS_MODULE,
+ };
+ 
++static struct nf_flowtable_type flowtable_bridge;
++
+ static struct nf_flowtable_type flowtable_ipv4 = {
+ 	.family		= NFPROTO_IPV4,
+ 	.init		= nf_flow_table_init,
+@@ -97,9 +99,12 @@
+ 
+ static int __init nf_flow_inet_module_init(void)
+ {
++	flowtable_bridge = flowtable_inet; flowtable_bridge.family = NFPROTO_BRIDGE;
++
+ 	nft_register_flowtable_type(&flowtable_ipv4);
+ 	nft_register_flowtable_type(&flowtable_ipv6);
+ 	nft_register_flowtable_type(&flowtable_inet);
++	nft_register_flowtable_type(&flowtable_bridge);
+ 
+ 	return 0;
+ }
+@@ -109,6 +114,7 @@
+ 	nft_unregister_flowtable_type(&flowtable_inet);
+ 	nft_unregister_flowtable_type(&flowtable_ipv6);
+ 	nft_unregister_flowtable_type(&flowtable_ipv4);
++	nft_unregister_flowtable_type(&flowtable_bridge);
+ }
+ 
+ module_init(nf_flow_inet_module_init);
+@@ -119,4 +125,5 @@
+ MODULE_ALIAS_NF_FLOWTABLE(AF_INET);
+ MODULE_ALIAS_NF_FLOWTABLE(AF_INET6);
+ MODULE_ALIAS_NF_FLOWTABLE(1); /* NFPROTO_INET */
++MODULE_ALIAS_NF_FLOWTABLE(AF_BRIDGE);
+ MODULE_DESCRIPTION("Netfilter flow table mixed IPv4/IPv6 module");
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -141,7 +141,8 @@
+ 
+ 	if (ctx->family != NFPROTO_IPV4 &&
+ 	    ctx->family != NFPROTO_IPV6 &&
+-	    ctx->family != NFPROTO_INET)
++	    ctx->family != NFPROTO_INET &&
++	    ctx->family != NFPROTO_BRIDGE)
+ 		return -EOPNOTSUPP;
+ 
+ 	return nft_chain_validate_hooks(ctx->chain, hook_mask);
+--- a/net/netfilter/nf_flow_table_path.c
++++ b/net/netfilter/nf_flow_table_path.c
+@@ -14,6 +14,9 @@
+ #include <net/netfilter/nf_conntrack_core.h>
+ #include <net/netfilter/nf_conntrack_extend.h>
+ #include <net/netfilter/nf_flow_table.h>
++#include <linux/if_bridge.h>
++#include <net/route.h>
++#include <net/ip6_route.h>
+ 
+ static enum flow_offload_xmit_type nft_xmit_type(struct dst_entry *dst)
+ {
+@@ -41,7 +45,7 @@
+ 	return true;
+ }
+ 
+-static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
++static int nft_dev_fill_forward_path(struct net_device_path_ctx *ctx,
+ 				     const struct dst_entry *dst_cache,
+ 				     const struct nf_conn *ct,
+ 				     enum ip_conntrack_dir dir, u8 *ha,
+@@ -57,6 +61,9 @@
+ 		goto out;
+ 	}
+ 
++	if (!is_zero_ether_addr(ha))
++		goto out;
++
+ 	n = dst_neigh_lookup(dst_cache, daddr);
+ 	if (!n)
+ 		return -1;
+@@ -71,7 +78,7 @@
+ 		return -1;
+ 
+ out:
+-	return dev_fill_forward_path(dev, ha, stack);
++	return __dev_fill_forward_path(ctx, ha, stack);
+ }
+ 
+ struct nft_forward_info {
+@@ -100,12 +107,12 @@
+ 
+ 	for (i = 0; i < stack->num_paths; i++) {
+ 		path = &stack->path[i];
++		info->indev = path->dev;
+ 		switch (path->type) {
+ 		case DEV_PATH_ETHERNET:
+ 		case DEV_PATH_DSA:
+ 		case DEV_PATH_VLAN:
+ 		case DEV_PATH_PPPOE:
+-			info->indev = path->dev;
+ 			if (is_zero_ether_addr(info->h_source))
+ 				memcpy(info->h_source, path->dev->dev_addr, ETH_ALEN);
+ 
+@@ -147,18 +154,21 @@
+ 				info->num_encaps++;
+ 				break;
+ 			case DEV_PATH_BR_VLAN_UNTAG:
+-				if (WARN_ON_ONCE(info->num_encaps-- == 0)) {
+-					info->indev = NULL;
++				if (WARN_ON_ONCE(info->num_encaps == 0))
+ 					break;
+-				}
++				info->num_encaps--;
+ 				break;
+ 			case DEV_PATH_BR_VLAN_KEEP:
+ 				break;
+ 			}
+ 			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
+ 			break;
++		case DEV_PATH_MTK_WDMA:
++			if (is_zero_ether_addr(info->h_source))
++				memcpy(info->h_source, path->dev->dev_addr, ETH_ALEN);
++			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
++			break;
+ 		default:
+-			info->indev = NULL;
+ 			break;
+ 		}
+ 	}
+@@ -189,22 +200,62 @@
+ 	return found;
+ }
+ 
+-static void nft_dev_forward_path(struct nf_flow_route *route,
+-				 const struct nf_conn *ct,
+-				 enum ip_conntrack_dir dir,
+-				 struct nft_flowtable *ft)
++static int nft_dev_forward_path(const struct nft_pktinfo *pkt,
++				bool is_bridging, struct nf_flow_route *route,
++				const struct nf_conn *ct, enum ip_conntrack_dir dir,
++				enum ip_conntrack_dir skb_dir, struct nft_flowtable *ft)
+ {
+ 	const struct dst_entry *dst = route->tuple[dir].dst;
+ 	struct net_device_path_stack stack;
++	struct net_device_path_ctx ctx = {
++		.dev	= dst->dev,
++	};
+ 	struct nft_forward_info info = {};
+-	unsigned char ha[ETH_ALEN];
++	unsigned char ha[ETH_ALEN] = {};
+ 	int i;
+ 
+-	if (nft_dev_fill_forward_path(route, dst, ct, dir, ha, &stack) >= 0)
++	if (is_bridging) {
++		struct ethhdr *eth = eth_hdr(pkt->skb);
++		__be16 vlan_proto;
++		u16 vlan_id;
++
++		if (skb_dir != dir) {
++			memcpy(ha, eth->h_source, ETH_ALEN);
++			memcpy(info.h_source, eth->h_dest, ETH_ALEN);
++		} else {
++			memcpy(ha, eth->h_dest, ETH_ALEN);
++			memcpy(info.h_source, eth->h_source, ETH_ALEN);
++		}
++
++		rcu_read_lock();
++		if (skb_dir != dir) {
++			vlan_id = route->tuple[dir].in.num_encaps ?
++				  route->tuple[dir].in.encap[0].id : 0;
++			vlan_proto = route->tuple[dir].in.encap[0].proto;
++		} else if (skb_vlan_tag_present(pkt->skb)) {
++			vlan_id = skb_vlan_tag_get_id(pkt->skb);
++			vlan_proto = pkt->skb->vlan_proto;
++		} else {
++			vlan_id = br_vlan_get_offload_info_rcu(pkt->skb->dev,
++								pkt->skb, &vlan_proto);
++		}
++		if (vlan_id) {
++			ctx.num_vlans = 1;
++			ctx.vlan[0].id = vlan_id;
++			ctx.vlan[0].proto = vlan_proto;
++			info.encap[0].id = vlan_id;
++			info.encap[0].proto = vlan_proto;
++			info.num_encaps = 1;
++		}
++		rcu_read_unlock();
++	}
++
++	if (nft_dev_fill_forward_path(&ctx, dst, ct, dir, ha, &stack) >= 0)
+ 		nft_dev_path_info(&stack, &info, ha, &ft->data);
+ 
+-	if (!info.indev || !nft_flowtable_find_dev(info.indev, ft))
+-		return;
++	if (!info.indev ||
++	    (!is_bridging && !nft_flowtable_find_dev(info.indev, ft)))
++		return -ENOENT;
+ 
+ 	route->tuple[!dir].in.ifindex = info.indev->ifindex;
+ 	for (i = 0; i < info.num_encaps; i++) {
+@@ -221,17 +277,52 @@
+ 		route->tuple[dir].out.hw_ifindex = info.hw_outdev->ifindex;
+ 		route->tuple[dir].xmit_type = info.xmit_type;
+ 	}
++
++	return 0;
+ }
+ 
+ int nft_flow_route(const struct nft_pktinfo *pkt, const struct nf_conn *ct,
+ 		   struct nf_flow_route *route, enum ip_conntrack_dir dir,
+ 		   struct nft_flowtable *ft)
+ {
+-	struct dst_entry *this_dst = skb_dst(pkt->skb);
+-	struct dst_entry *other_dst = NULL;
+-	struct flowi fl;
++	struct dst_entry *this_dst = NULL, *other_dst = NULL;
++	bool is_bridging = false;
++	struct net_device *br_dev;
++	struct flowi fl = {};
++
++	if (netif_is_bridge_port(pkt->skb->dev)) {
++		rcu_read_lock();
++		br_dev = netdev_master_upper_dev_get_rcu(pkt->skb->dev);
++		if (br_dev && netif_is_bridge_master(br_dev)) {
++			switch (ct->tuplehash[dir].tuple.src.l3num) {
++			case NFPROTO_IPV4: {
++				struct rtable *rt = rt_dst_alloc(br_dev, 0, RTN_UNICAST, true);
++				this_dst = rt ? &rt->dst : NULL;
++				break;
++			}
++			case NFPROTO_IPV6: {
++				struct rt6_info *rt = ip6_dst_alloc(nft_net(pkt), br_dev, 0);
++				this_dst = rt ? &rt->dst : NULL;
++				break;
++			}
++			}
++		}
++		rcu_read_unlock();
++
++		if (this_dst) {
++			is_bridging = true;
++			other_dst = this_dst;
++			dst_hold(this_dst);
++		}
++	}
++
++	if (this_dst)
++		goto skip_l3;
++
++	this_dst = skb_dst(pkt->skb);
++	if (!this_dst)
++		return -ENOENT;
+ 
+-	memset(&fl, 0, sizeof(fl));
+ 	switch (nft_pf(pkt)) {
+ 	case NFPROTO_IPV4:
+ 		fl.u.ip4.daddr = ct->tuplehash[dir].tuple.src.u3.ip;
+@@ -262,13 +356,19 @@
+ 		return -ENOENT;
+ 	}
+ 
++skip_l3:
++
+ 	nft_default_forward_path(route, this_dst, dir);
+ 	nft_default_forward_path(route, other_dst, !dir);
+ 
+ 	if (route->tuple[dir].xmit_type	== FLOW_OFFLOAD_XMIT_NEIGH &&
+ 	    route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH) {
+-		nft_dev_forward_path(route, ct, dir, ft);
+-		nft_dev_forward_path(route, ct, !dir, ft);
++		if ((nft_dev_forward_path(pkt, is_bridging, route, ct, dir, dir, ft) ||
++		     nft_dev_forward_path(pkt, is_bridging, route, ct, !dir, dir, ft)) && is_bridging) {
++			dst_release(route->tuple[dir].dst);
++			dst_release(route->tuple[!dir].dst);
++			return -ENOENT;
++		}
+ 	}
+ 
+ 	return 0;
