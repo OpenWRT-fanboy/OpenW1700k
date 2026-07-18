@@ -1,0 +1,86 @@
+From: Ryan Chen <rchen14b@gmail.com>
+Date: Sun, 16 Mar 2026 12:00:00 -0500
+Subject: [PATCH 4/5] netfilter: nf_flow_table: add bridge flowtable type
+
+Add an NFPROTO_BRIDGE nf_flowtable_type built directly on the existing
+inet flowtable hook and routing action, so that nftables flowtable
+declarations can be placed in bridge-family tables:
+
+    table bridge fw4 {
+        flowtable fb {
+            hook forward priority filter; policy accept;
+            flags offload;
+            devices = { "br-lan", "eth1" };
+        }
+        chain forward {
+            type filter hook forward priority filter; policy accept;
+            meta l4proto { tcp, udp } flow offload @fb
+        }
+    }
+
+This replaces the previous approach of requiring kmod-br-netfilter
+(CONFIG_BRIDGE_NETFILTER) to lift bridged IP traffic into the inet
+forward chain for nft_flow_offload evaluation.
+
+The bridge flowtable type reuses nf_flow_offload_inet_hook() (which
+already strips VLAN/PPPoE encapsulation and dispatches to the IPv4 or
+IPv6 offload hooks) and nf_flow_rule_route_inet() (which selects IPv4 or
+IPv6 routing by the flow tuple's L3 protocol). The two functions are
+identical to what a standalone bridge flowtable module would need, so
+registering a second type in nf_flow_table_inet.ko avoids duplicating
+them in a separate .c file. The new MODULE_ALIAS_NF_FLOWTABLE(AF_BRIDGE)
+allows nft to autoload the module when a bridge-family flowtable is
+declared.
+
+No new Kconfig symbol or Makefile object is introduced; building
+CONFIG_NF_FLOW_TABLE_INET=m produces nf_flow_table_inet.ko, which now
+also registers the NFPROTO_BRIDGE flowtable type. No CONFIG_NF_TABLES_BRIDGE
+dependency is required to register the type -- it is only needed at
+ruleset time, when the user declares `table bridge ...`.
+
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+---
+ net/netfilter/nf_flow_table_inet.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+--- a/net/netfilter/nf_flow_table_inet.c
++++ b/net/netfilter/nf_flow_table_inet.c
+@@ -75,6 +75,16 @@ static struct nf_flowtable_type flowtabl
+ 	.owner		= THIS_MODULE,
+ };
+ 
++static struct nf_flowtable_type flowtable_bridge = {
++	.family		= NFPROTO_BRIDGE,
++	.init		= nf_flow_table_init,
++	.setup		= nf_flow_table_offload_setup,
++	.action		= nf_flow_rule_route_inet,
++	.free		= nf_flow_table_free,
++	.hook		= nf_flow_offload_inet_hook,
++	.owner		= THIS_MODULE,
++};
++
+ static struct nf_flowtable_type flowtable_ipv4 = {
+ 	.family		= NFPROTO_IPV4,
+ 	.init		= nf_flow_table_init,
+@@ -100,6 +110,7 @@ static int __init nf_flow_inet_module_in
+ 	nft_register_flowtable_type(&flowtable_ipv4);
+ 	nft_register_flowtable_type(&flowtable_ipv6);
+ 	nft_register_flowtable_type(&flowtable_inet);
++	nft_register_flowtable_type(&flowtable_bridge);
+ 
+ 	return 0;
+ }
+@@ -109,6 +120,7 @@ static void __exit nf_flow_inet_module_e
+ 	nft_unregister_flowtable_type(&flowtable_inet);
+ 	nft_unregister_flowtable_type(&flowtable_ipv6);
+ 	nft_unregister_flowtable_type(&flowtable_ipv4);
++	nft_unregister_flowtable_type(&flowtable_bridge);
+ }
+ 
+ module_init(nf_flow_inet_module_init);
+@@ -119,4 +131,5 @@ MODULE_AUTHOR("Pablo Neira Ayuso <pablo@
+ MODULE_ALIAS_NF_FLOWTABLE(AF_INET);
+ MODULE_ALIAS_NF_FLOWTABLE(AF_INET6);
+ MODULE_ALIAS_NF_FLOWTABLE(1); /* NFPROTO_INET */
++MODULE_ALIAS_NF_FLOWTABLE(AF_BRIDGE);
+ MODULE_DESCRIPTION("Netfilter flow table mixed IPv4/IPv6 module");
