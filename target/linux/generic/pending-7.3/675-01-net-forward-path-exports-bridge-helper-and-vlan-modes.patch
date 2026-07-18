@@ -1,0 +1,45 @@
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -148,6 +148,8 @@ int br_vlan_get_info(const struct net_de
+ 		     struct bridge_vlan_info *p_vinfo);
+ int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid,
+ 			 struct bridge_vlan_info *p_vinfo);
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto);
+ bool br_mst_enabled(const struct net_device *dev);
+ int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids);
+ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state);
+@@ -184,6 +186,7 @@ static inline int br_vlan_get_info_rcu(c
+ 	return -EINVAL;
+ }
+ 
++static inline u16 br_vlan_get_offload_info_rcu(const struct net_device *dev, const struct sk_buff *skb, __be16 *proto) { return 0; }
+ static inline bool br_mst_enabled(const struct net_device *dev)
+ {
+ 	return false;
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -1556,6 +1556,23 @@ int br_vlan_get_info_rcu(const struct ne
+ }
+ EXPORT_SYMBOL_GPL(br_vlan_get_info_rcu);
+ 
++u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
++				 const struct sk_buff *skb, __be16 *proto)
++{
++	struct net_bridge_port *port = br_port_get_rcu(dev);
++	u16 vid = 0;
++
++	if (!port || !br_opt_get(port->br, BROPT_VLAN_ENABLED)) return 0;
++	if (skb_vlan_tag_present(skb)) {
++		*proto = skb->vlan_proto;
++		return skb_vlan_tag_get_id(skb);
++	}
++	br_vlan_get_pvid_rcu(dev, &vid);
++	*proto = vid ? port->br->vlan_proto : 0;
++	return vid;
++}
++EXPORT_SYMBOL_GPL(br_vlan_get_offload_info_rcu);
++
+ static int br_vlan_is_bind_vlan_dev(const struct net_device *dev)
+ {
+ 	return is_vlan_dev(dev) &&
