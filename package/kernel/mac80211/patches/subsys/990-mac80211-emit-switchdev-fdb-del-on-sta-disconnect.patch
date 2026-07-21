@@ -1,0 +1,90 @@
+From: OpenWrt <noreply@openwrt.org>
+Date: Mon, 20 Jul 2026 22:00:00 -1000
+Subject: [PATCH] mac80211: emit switchdev FDB DEL on STA disconnect
+
+When a WiFi STA disconnects from an AP that is a bridge port, mac80211
+does not emit a switchdev FDB DEL_TO_DEVICE event for the STA's MAC.
+The bridge's FDB entry learned by the AP port stays around until the
+normal bridge aging timer (default 300s) or the bridge's learn-on-rx
+path eventually notices the MAC moved.
+
+This breaks hardware flow offload on platforms that rely on switchdev
+FDB events to invalidate stale PPE/WED flow entries (Airoha AN7581,
+MediaTek, etc.).  After a STA roams between bands/APs or disconnects
+and reconnects, the old HW flow remains bound to the stale WCID/PPE
+entry and packets hit a dead path, causing connectivity to stall until
+the flow times out:
+
+  1. T=0: STA disconnects from phy0.2-ap0
+  2. T=0..k: HW flow for STA MAC stays bound; PPE forwards to old WCID
+  3. T=k: STA reconnects (maybe to a different band/AP)
+  4. T=k+lag: bridge finally notices MAC moved, emits FDB DEL on a
+     *different* port (the source port of a packet that arrives from
+     the new location), triggering HW flow teardown far too late
+  5. If the new flow was committed before the stale teardown,
+     orphaned subflow cleanup clobbers the new flow, breaking forwarding
+
+Fix this by emitting a SWITCHDEV_FDB_DEL_TO_DEVICE notification from
+__sta_info_destroy_part2() when the STA's sdata is an AP or AP_VLAN
+interface bound to a bridge port.  switchdev listeners (e.g., the
+nf_flow_table FDB roaming handler, PPE drivers, DSA) immediately
+tear down any HW state keyed on the STA MAC, restoring forwarding
+promptly on reconnect.
+
+The event is only emitted when:
+  - CONFIG_NET_SWITCHDEV is enabled
+  - sdata->vif.type is AP or AP_VLAN (matches sta_info.c's existing
+    AP-oriented filters)
+  - sdata->dev is currently a bridge port (so non-bridged AP setups
+    incur no extra overhead)
+
+The notification is best-effort: listeners without interest in the
+event return NOTIFY_DONE and the chain proceeds.  No error path is
+added; failing to notify is not fatal and matches DSA's behavior.
+
+Signed-off-by: OpenWrt <noreply@openwrt.org>
+---
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -18,6 +18,10 @@
+ #include <linux/timer.h>
+ #include <linux/rtnetlink.h>
+ 
++#if IS_ENABLED(CONFIG_NET_SWITCHDEV)
++#include <net/switchdev.h>
++#endif
++
+ #include <net/mac80211.h>
+ #include "ieee80211_i.h"
+ #include "driver-ops.h"
+@@ -1546,6 +1550,30 @@
+ 	sta_dbg(sdata, "Removed STA %pM\n", sta->sta.addr);
+ 
+ 	cfg80211_del_sta_sinfo(sdata->dev, sta->sta.addr, sinfo, GFP_KERNEL);
++#if IS_ENABLED(CONFIG_NET_SWITCHDEV)
++	/* Notify switchdev listeners (e.g., bridge FDB roaming handlers,
++	 * PPE/WED drivers) that the STA MAC has left this AP. Without this,
++	 * hardware-offloaded flows bound to the STA's MAC persist until the
++	 * bridge ages the FDB entry out (~300s) or learns it on another
++	 * port, leaving stale HW BINDs that drop packets after reconnect.
++	 */
++	if ((sdata->vif.type == NL80211_IFTYPE_AP ||
++	     sdata->vif.type == NL80211_IFTYPE_AP_VLAN) &&
++	    netif_is_bridge_port(sdata->dev)) {
++		struct switchdev_notifier_fdb_info fdb_info = {};
++
++		fdb_info.addr = sta->sta.addr;
++		fdb_info.vid = 0;
++		fdb_info.added_by_user = false;
++		fdb_info.is_local = false;
++		fdb_info.locked = false;
++		fdb_info.offloaded = false;
++		fdb_info.info.dev = sdata->dev;
++		call_switchdev_notifiers(SWITCHDEV_FDB_DEL_TO_DEVICE,
++					 sdata->dev, &fdb_info.info, NULL);
++	}
++#endif
++
+ 	kfree(sinfo);
+ 
+ 	ieee80211_sta_debugfs_remove(sta);
