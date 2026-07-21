@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenWrt <noreply@openwrt.org>
+Date: Sat, 18 Jul 2026 12:00:00 -1000
+Subject: [PATCH] net: airoha: ppe: fix flow teardown and re-insertion
+
+airoha_ppe_foe_insert_entry() skips entirely when the HW slot is in
+BIND state, so a bridge flow whose slot is occupied by a stale BIND
+from a previous client session is never re-committed with the updated
+WCID.  Fix by removing the early BIND skip so the foe_flow loop
+always runs.  When no matching L4 flow exists (the bridge case), the
+code falls through to commit_subflow_entry() which overwrites the
+stale BIND with the new WCID.
+
+airoha_ppe_foe_remove_flow() has two issues:
+
+1. Never-committed flows (e->hash == 0xffff) leave stale BIND entries
+   in HW.  Fix: compute the hash slot from e->data and invalidate any
+   BIND entry occupying it.
+
+2. Committed flows (e->hash != 0xffff) unconditionally invalidate the
+   HW entry, but a new flow may have already taken over the hash slot.
+   Fix: re-read the HW entry and compare it against the flow being
+   removed.  Only invalidate if the HW entry still matches (or is an
+   L2 subflow, whose kzalloc'd data field never matches).
+
+Also add an INVALID bypass for airoha_ppe_foe_compare_entry() in the
+insert_entry foe_flow loop: when the HW slot is INVALID (all zeros),
+compare_entry always fails because it compares SW data against zeroed
+HW data.  In that case, commit any L4 flow found at the hash -- the
+slot is empty so there is nothing to conflict with.
+
+When a flow enters TEARDOWN between flow_offload_add() queuing the
+FLOW_CLS_REPLACE work item and the work handler executing, committing
+the flow to HW is pointless and harmful:
+
+1. GC marks the flow TEARDOWN and queues FLOW_CLS_DESTROY
+2. REPLACE runs first -> commits a dying flow to HW, sets HW bit
+3. DESTROY runs -> tears down the HW rules just committed
+
+Worse, if DESTROY runs first, it clears HW rules and sets HW_DEAD.
+Then REPLACE runs and re-creates HW rules for a flow that is about
+to be freed, leaving dangling TC/CT state.
+
+Fix this by checking NF_FLOW_TEARDOWN in flow_offload_work_add()
+before calling nf_flow_offload_alloc().  If the flow is already
+tearing down, skip the hardware commit entirely.
+
+Signed-off-by: OpenWrt <noreply@openwrt.org>
+---
+ drivers/net/ethernet/airoha/airoha_ppe.c |   27 ++++++++++++++-----
+ net/netfilter/nf_flow_table_offload.c    |    4 ++++
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -719,13 +719,41 @@
+ static void airoha_ppe_foe_remove_flow(struct airoha_ppe *ppe,
+ 				       struct airoha_flow_table_entry *e)
+ {
++	struct airoha_foe_entry *hwe;
++
+ 	lockdep_assert_held(&ppe_lock);
+ 
++	/* If the flow was never committed to hardware (e->hash == 0xffff),
++	 * compute the hash slot from e->data and invalidate any stale BIND
++	 * entry occupying that slot.
++	 */
++	if (e->hash == 0xffff && e->type == FLOW_TYPE_L4) {
++		struct airoha_foe_entry invalid = {};
++		u32 hash, state;
++
++		hash = airoha_ppe_foe_get_entry_hash(ppe, &e->data);
++		hwe = airoha_ppe_foe_get_entry_locked(ppe, hash);
++		if (hwe) {
++			state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
++			if (state == AIROHA_FOE_STATE_BIND) {
++				invalid.ib1 = hwe->ib1;
++				invalid.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
++				invalid.ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
++							  AIROHA_FOE_STATE_INVALID);
++				airoha_ppe_foe_commit_entry(ppe, &invalid, hash, false);
++			}
++		}
++	}
++
+ 	hlist_del_init(&e->list);
+ 	if (e->hash != 0xffff) {
+-		e->data.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
+-		e->data.ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
+-					  AIROHA_FOE_STATE_INVALID);
+-		airoha_ppe_foe_commit_entry(ppe, &e->data, e->hash, false);
++		hwe = airoha_ppe_foe_get_entry_locked(ppe, e->hash);
++		if (hwe && (e->type == FLOW_TYPE_L2_SUBFLOW ||
++			    airoha_ppe_foe_compare_entry(e, hwe))) {
++			e->data.ib1 &= ~AIROHA_FOE_IB1_BIND_STATE;
++			e->data.ib1 |= FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE,
++						  AIROHA_FOE_STATE_INVALID);
++			airoha_ppe_foe_commit_entry(ppe, &e->data, e->hash, false);
++		}
+ 		e->hash = 0xffff;
+ 	}
+@@ -831,19 +859,17 @@
+ 	state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
+-	if (state == AIROHA_FOE_STATE_BIND)
+-		goto unlock;
+-
+ 	index = airoha_ppe_foe_get_entry_hash(ppe, hwe);
+ 	hlist_for_each_entry_safe(e, n, &ppe->foe_flow[index], list) {
+ 		if (e->type == FLOW_TYPE_L2_SUBFLOW) {
+ 			state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
+ 			if (state != AIROHA_FOE_STATE_BIND) {
+ 				e->hash = 0xffff;
+ 				airoha_ppe_foe_remove_flow(ppe, e);
+ 			}
+ 			continue;
+ 		}
+ 
+-		if (!airoha_ppe_foe_compare_entry(e, hwe))
++		if (state != AIROHA_FOE_STATE_INVALID &&
++		    !airoha_ppe_foe_compare_entry(e, hwe))
+ 			continue;
+ 
+ 		airoha_ppe_foe_commit_entry(ppe, &e->data, hash, rx_wlan);
+--- a/net/netfilter/nf_flow_table_offload.c
++++ b/net/netfilter/nf_flow_table_offload.c
+@@ -978,6 +978,9 @@
+ 	struct nf_flow_rule *flow_rule[FLOW_OFFLOAD_DIR_MAX];
+ 	int err;
+ 
++	if (test_bit(NF_FLOW_TEARDOWN, &offload->flow->flags))
++		return;
++
+ 	err = nf_flow_offload_alloc(offload, flow_rule);
+ 	if (err < 0)
+ 		return;
