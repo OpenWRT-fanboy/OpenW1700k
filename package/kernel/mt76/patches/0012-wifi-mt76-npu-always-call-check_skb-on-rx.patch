@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenWrt <noreply@openwrt.org>
+Date: Sat, 19 Jul 2026 00:00:00 +0000
+Subject: [PATCH] wifi: mt76: npu: always call check_skb on RX packets
+
+mt76_npu_check_ppe() currently only calls airoha_ppe_dev_check_skb()
+when the NPU reports CRSN = HIT_UNBIND_RATE_REACHED.  This reason code
+requires an existing UNBIND entry in the HW PPE table.  After a WiFi
+roaming event tears down the old flow entry, the HW PPE slot is INVALID
+and the NPU reports CRSN = MISS instead -- so check_skb is never called,
+and the new flow is never committed to hardware.
+
+The wired QDMA path does not have this restriction: it calls
+check_skb(rx_wlan=false) unconditionally for every received packet.
+The check_skb function itself has a built-in rate limit (HZ/10 throttle
+per hash slot) so there is no performance concern from calling it on
+every packet.
+
+Remove the CRSN reason gate so that WiFi NPU RX always calls check_skb,
+matching the wired path behavior.  This allows the PPE driver to
+re-commit torn-down flows when the client reconnects after roaming.
+
+Signed-off-by: OpenWrt <noreply@openwrt.org>
+---
+--- a/npu.c
++++ b/npu.c
+@@ -117,7 +117,7 @@
+ 			u32 info)
+ {
+ 	struct airoha_ppe_dev *ppe_dev;
+-	u16 reason, hash;
++	u16 hash;
+ 
+ 	if (!mt76_npu_device_active(dev))
+ 		return;
+@@ -131,11 +131,8 @@
+ 	hash = FIELD_GET(NPU_RX_DMA_FOE_ID_MASK, info);
+ 	skb_set_hash(skb, hash, PKT_HASH_TYPE_L4);
+ 
+-	reason = FIELD_GET(NPU_RX_DMA_CRSN_MASK, info);
+-	if (reason == PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED) {
+-		skb_set_mac_header(skb, 0);
+-		airoha_ppe_dev_check_skb(ppe_dev, skb, hash, true);
+-	}
++	skb_set_mac_header(skb, 0);
++	airoha_ppe_dev_check_skb(ppe_dev, skb, hash, true);
+ out:
+ 	rcu_read_unlock();
+ }
