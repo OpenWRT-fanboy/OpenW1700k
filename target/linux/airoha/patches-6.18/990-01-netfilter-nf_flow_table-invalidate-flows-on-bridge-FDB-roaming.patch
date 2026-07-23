@@ -1,55 +1,8 @@
-From: Chad Monroe <chad@monroe.io>
-Date: Sun, 02 Feb 2026 10:30:00 -0800
-Subject: [PATCH] netfilter: nf_flow_table: invalidate flows on bridge FDB
- roaming
-
-When a client roams between bridge ports (WiFi APs, wired to wireless,
-etc.), offloaded flows with stale destination MACs continue forwarding
-to the wrong port until they time out.
-
-Register a switchdev notifier to detect FDB deletions and tear down
-affected flows immediately.  Workqueue defers cleanup from atomic
-notifier context.
-
-Optimizations to reduce CPU overhead under FDB churn:
-- Track per-flowtable direct-xmit flow count; skip flowtables with none
-- Skip multicast/broadcast FDB entries
-
-The cleanup work drains the GC and offload workqueues synchronously.
-After the offload flush completes, all torn-down HW flows have HW_DEAD
-set but their tuplehash entries remain in the rhashtable until the next
-periodic GC run (~1s later).  A second nf_flow_table_gc_run() call
-immediately after the flush removes these entries so new flows can be
-created without delay.
-
-Add a generation counter to prevent a rapid disconnect/reconnect race:
-client disconnects -> FDB DEL queued -> client reconnects -> new flow
-created -> stale cleanup tears down the new flow.  The counter is
-incremented on each FDB DEL event; flows stamp their creation
-generation; the cleanup iterator skips flows created at or after the
-generation that triggered the cleanup.
-
-Reduce the default bridge FDB ageing time from 300s to 30s (matching
-802.1D-2004 clause 17.11.5).  This is the safety net for stale entries
-that the switchdev FDB DEL notifier misses: when a WiFi STA
-disconnects, its FDB entry now ages out in 30s instead of 5 minutes,
-preventing hardware-offloaded flows from forwarding into a dead path.
-
-Note: the WiFi NPU path (mt76) also requires a companion change to
-always call check_skb on RX packets so torn-down flows can be
-re-committed after roaming -- see the mt76 NPU patch in
-package/kernel/mt76/patches/.
-
-Signed-off-by: Chad Monroe <chad@monroe.io>
----
- include/linux/if_bridge.h             |    2 +-
- include/net/netfilter/nf_flow_table.h |   20 ++
- net/netfilter/nf_flow_table_core.c    |  165 ++++++++++++++++++++++++++++++++
- 3 files changed, 186 insertions(+), 1 deletion(-)
-
+diff --git a/include/linux/if_bridge.h b/include/linux/if_bridge.h
+index c5fe3b2..04c43c1 100644
 --- a/include/linux/if_bridge.h
 +++ b/include/linux/if_bridge.h
-@@ -62,7 +62,7 @@
+@@ -62,7 +62,7 @@ struct br_ip_list {
  #define BR_PORT_MAB		BIT(22)
  #define BR_NEIGH_VLAN_SUPPRESS	BIT(23)
  
@@ -58,6 +11,8 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  
  struct net_bridge;
  void brioctl_set(int (*hook)(struct net *net, unsigned int cmd,
+diff --git a/include/net/netfilter/nf_flow_table.h b/include/net/netfilter/nf_flow_table.h
+index c003cd1..9cb3682 100644
 --- a/include/net/netfilter/nf_flow_table.h
 +++ b/include/net/netfilter/nf_flow_table.h
 @@ -84,6 +84,9 @@ struct nf_flowtable {
@@ -70,7 +25,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  };
  
  static inline bool nf_flowtable_hw_offload(struct nf_flowtable *flowtable)
-@@ -91,6 +94,13 @@ static inline bool nf_flowtable_hw_offlo
+@@ -91,6 +94,13 @@ static inline bool nf_flowtable_hw_offload(struct nf_flowtable *flowtable)
  	return flowtable->flags & NF_FLOWTABLE_HW_OFFLOAD;
  }
  
@@ -92,6 +47,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  	struct rcu_head				rcu_head;
  };
  
+diff --git a/net/netfilter/nf_flow_table_core.c b/net/netfilter/nf_flow_table_core.c
 --- a/net/netfilter/nf_flow_table_core.c
 +++ b/net/netfilter/nf_flow_table_core.c
 @@ -5,6 +5,7 @@
@@ -102,7 +58,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  #include <net/ip.h>
  #include <net/ip6_route.h>
  #include <net/netfilter/nf_tables.h>
-@@ -13,10 +14,26 @@
+@@ -12,10 +13,26 @@
  #include <net/netfilter/nf_conntrack_core.h>
  #include <net/netfilter/nf_conntrack_l4proto.h>
  #include <net/netfilter/nf_conntrack_tuple.h>
@@ -129,7 +85,25 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  static void
  flow_offload_fill_dir(struct flow_offload *flow,
  		      enum flow_offload_tuple_dir dir)
-@@ -340,6 +357,13 @@ int flow_offload_add(struct nf_flowtable
+@@ -324,13 +341,16 @@ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
+ 	err = rhashtable_insert_fast(&flow_table->rhashtable,
+ 				     &flow->tuplehash[0].node,
+ 				     nf_flow_offload_rhash_params);
+-	if (err < 0)
++	if (err < 0) {
++		pr_warn("FLOW_ADD: rhashtable insert[0] FAILED err=%d\n", err);
+ 		return err;
++	}
+ 
+ 	err = rhashtable_insert_fast(&flow_table->rhashtable,
+ 				     &flow->tuplehash[1].node,
+ 				     nf_flow_offload_rhash_params);
+ 	if (err < 0) {
++		pr_warn("FLOW_ADD: rhashtable insert[1] FAILED err=%d\n", err);
+ 		rhashtable_remove_fast(&flow_table->rhashtable,
+ 				       &flow->tuplehash[0].node,
+ 				       nf_flow_offload_rhash_params);
+@@ -339,6 +359,13 @@ int flow_offload_add(struct nf_flowtable *flow_table, struct flow_offload *flow)
  
  	nf_ct_refresh(flow->ct, NF_CT_DAY);
  
@@ -143,7 +117,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  	if (nf_flowtable_hw_offload(flow_table)) {
  		__set_bit(NF_FLOW_HW, &flow->flags);
  		nf_flow_offload_add(flow_table, flow);
-@@ -371,6 +395,11 @@ EXPORT_SYMBOL_GPL(flow_offload_refresh);
+@@ -370,6 +397,11 @@ EXPORT_SYMBOL_GPL(flow_offload_refresh);
  static void flow_offload_del(struct nf_flowtable *flow_table,
  			     struct flow_offload *flow)
  {
@@ -155,7 +129,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  	rhashtable_remove_fast(&flow_table->rhashtable,
  			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
  			       nf_flow_offload_rhash_params);
-@@ -692,6 +721,9 @@ int nf_flow_table_init(struct nf_flowtab
+@@ -696,6 +728,9 @@ int nf_flow_table_init(struct nf_flowtable *flowtable)
  	INIT_DELAYED_WORK(&flowtable->gc_work, nf_flow_offload_work_gc);
  	flow_block_init(&flowtable->flow_block);
  	init_rwsem(&flowtable->flow_block_lock);
@@ -165,7 +139,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  
  	err = rhashtable_init(&flowtable->rhashtable,
  			      &nf_flow_offload_rhash_params);
-@@ -744,6 +776,103 @@ void nf_flow_table_cleanup(struct net_de
+@@ -748,6 +783,101 @@ void nf_flow_table_cleanup(struct net_device *dev)
  }
  EXPORT_SYMBOL_GPL(nf_flow_table_cleanup);
  
@@ -181,10 +155,8 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
 +	if (flow->cleanup_gen >= cleanup->gen)
 +		return;
 +
-+	if ((flow->tuplehash[0].tuple.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT &&
-+	     ether_addr_equal(flow->tuplehash[0].tuple.out.h_dest, cleanup->mac)) ||
-+	    (flow->tuplehash[1].tuple.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT &&
-+	     ether_addr_equal(flow->tuplehash[1].tuple.out.h_dest, cleanup->mac))) {
++	if (ether_addr_equal(flow->tuplehash[0].tuple.out.h_dest, cleanup->mac) ||
++	    ether_addr_equal(flow->tuplehash[1].tuple.out.h_dest, cleanup->mac)) {
 +		flow_offload_teardown(flow);
 +	}
 +}
@@ -269,7 +241,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  void nf_flow_table_free(struct nf_flowtable *flow_table)
  {
  	mutex_lock(&flowtable_lock);
-@@ -821,8 +967,26 @@ static int __init nf_flow_table_module_i
+@@ -846,8 +976,26 @@ static int __init nf_flow_table_module_init(void)
  	if (ret)
  		goto out_bpf;
  
@@ -296,7 +268,7 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  out_bpf:
  	nf_flow_table_offload_exit();
  out_offload:
-@@ -832,7 +997,12 @@ out_offload:
+@@ -857,6 +1005,11 @@ out_offload:
  
  static void __exit nf_flow_table_module_exit(void)
  {
@@ -308,4 +280,3 @@ Signed-off-by: Chad Monroe <chad@monroe.io>
  	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
  	nf_flow_table_offload_exit();
  	unregister_pernet_subsys(&nf_flow_table_net_ops);
- }

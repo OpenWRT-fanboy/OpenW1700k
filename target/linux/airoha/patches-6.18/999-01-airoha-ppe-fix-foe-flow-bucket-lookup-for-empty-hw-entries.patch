@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenWrt <noreply@openwrt.org>
+Date: Sat, 19 Jul 2026 12:00:00 -1000
+Subject: [PATCH] net: airoha: ppe: fix foe flow bucket lookup for empty hw
+ entries
+
+When a PPE hardware entry is in INVALID state (cleared or never
+committed), its packet fields are zeroed. Computing the hash from
+these fields via airoha_ppe_foe_get_entry_hash() produces a wrong
+bucket index, so the hlist walk cannot find the matching SW flow
+entry to clean up.
+
+Use the original hash parameter (which is the correct hash from
+the skb) when the HW entry state is INVALID.
+
+Signed-off-by: OpenWrt <noreply@openwrt.org>
+---
+ drivers/net/ethernet/airoha/airoha_ppe.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
+index 000000000..000000001 100644
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -939,7 +939,10 @@
+ 		goto unlock;
+ 
+ 	state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
+-	index = airoha_ppe_foe_get_entry_hash(ppe, hwe);
++	if (state == AIROHA_FOE_STATE_INVALID)
++		index = hash;
++	else
++		index = airoha_ppe_foe_get_entry_hash(ppe, hwe);
+ 	hlist_for_each_entry_safe(e, n, &ppe->foe_flow[index], list) {
+ 		if (e->type == FLOW_TYPE_L2_SUBFLOW) {
+ 			state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
