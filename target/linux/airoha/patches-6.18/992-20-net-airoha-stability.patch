@@ -1,0 +1,39 @@
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -4338,8 +4338,10 @@
+ 
+ 	*dev = 0;
+ 	switch (sport) {
+-	case 0x10 ... 0x14:
+-		*port = 0; /* GDM1 */
++	case 0x0 ... 0x1:	/* pingpong */
++	case 0x7:		/* npu pingpong */
++	case 0x10 ... 0x14:	/* GDM1 */
++		*port = 0;
+ 		break;
+ 	case 0x2 ... 0x4:
+ 		*port = sport - 1;
+@@ -4419,8 +4421,10 @@
+ 
+ 	*dev = 0;
+ 	switch (sport) {
+-	case 0x10 ... 0x14:
+-		*port = 0; /* GDM1 */
++	case 0x0 ... 0x1:	/* pingpong */
++	case 0x7:		/* npu pingpong */
++	case 0x10 ... 0x14:	/* GDM1 */
++		*port = 0;
+ 		break;
+ 	case 0x2 ... 0x4:
+ 		*port = sport - 1;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -555,7 +555,7 @@
+ };
+ 
+ /* RX queue to IRQ mapping: BIT(q) in IRQ(n) */
+-#define RX_IRQ0_BANK_PIN_MASK			0x839f
++#define RX_IRQ0_BANK_PIN_MASK			0xbb9f
+ #define RX_IRQ1_BANK_PIN_MASK			0xffe00000
+ #define RX_IRQ2_BANK_PIN_MASK			0x20
+ #define RX_IRQ3_BANK_PIN_MASK			0x40
