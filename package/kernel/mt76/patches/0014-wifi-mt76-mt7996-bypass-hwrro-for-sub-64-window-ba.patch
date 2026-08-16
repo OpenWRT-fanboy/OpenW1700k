@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tao Gong <gongtao0607@gmail.com>
+Date: Sun, 16 Aug 2026 00:00:00 +0000
+Subject: [PATCH] wifi: mt76: mt7996: bypass HW_RRO for sub-64 window BlockAck sessions
+
+Apple macOS/iOS stations negotiate sub-64 window BlockAck sessions on
+latency-sensitive queues (such as TID 6 with buf_size = 8 and TID 1
+with buf_size = 16) alongside standard bulk queues (TID 0 with
+buf_size = 64/256).
+
+The MT7996 HW_RRO (Hardware Receive Reordering Offload) engine is
+architected around standard 64-frame minimum BlockAck bitmap windows.
+Enabling HW_RRO (ba_rdd_rro = 1) on sub-64 window sessions causes
+the MT7996 on-chip reordering ring and SRAM session lookup state machine
+to enter an invalid state, stalling hardware RX offload on subsequent
+associations reusing that WCID.
+
+Bypass HW_RRO for RX BlockAck sessions with buf_size < 64, delegating
+sub-64 window streams to standard mac80211 software reordering while
+preserving full hardware offload acceleration for standard bulk data
+streams (buf_size >= 64).
+
+Signed-off-by: Tao Gong <gongtao0607@gmail.com>
+---
+--- a/mt7996/mcu.c
++++ b/mt7996/mcu.c
+@@ -1752,7 +1752,8 @@ mt7996_mcu_sta_ba(struct mt7996_dev *dev
+ 	ba->ba_en = enable << params->tid;
+ 	ba->amsdu = params->amsdu;
+ 	ba->tid = params->tid;
+-	ba->ba_rdd_rro = !tx && enable && mt7996_has_hwrro(dev);
++	ba->ba_rdd_rro = !tx && enable && mt7996_has_hwrro(dev) &&
++			 params->buf_size >= 64;
+ 
+ 	return mt76_mcu_skb_send_msg(&dev->mt76, skb,
+ 				     MCU_WMWA_UNI_CMD(STA_REC_UPDATE), true);

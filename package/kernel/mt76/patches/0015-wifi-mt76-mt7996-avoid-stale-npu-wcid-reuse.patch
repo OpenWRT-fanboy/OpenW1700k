@@ -1,0 +1,149 @@
+From: OpenWrt <noreply@openwrt.org>
+Subject: [PATCH] wifi: mt76: mt7996: avoid reusing wcids with stale NPU context
+
+A reconnecting station will be handed the same wcid whose NPU context is
+still populated with the former association.  Due to apparently buggy NPU
+firmware, uplink then stops being offloaded permanently, and this can only
+be remedied by rebooting.
+
+The stale per-wcid context is only left behind by clients that run several
+concurrent RX BA (A-MPDU) sessions across TIDs (e.g. iPhones); single-TID
+clients do not poison the wcid.  Track the number of RX BA TIDs each
+station establishes and only treat multi-TID stations as stale on teardown.
+
+Hand a reconnecting (multi-TID) station a fresh index whenever one exists.
+Once the fresh pool is exhausted, recycle stale indices oldest-first
+through a persistent rotating cursor, so an index is only handed out again
+after a full rotation of intervening associations whose offloaded flows
+must have displaced the stale NPU context that poisoned it.
+
+--- a/mt7996/mt7996.h
++++ b/mt7996/mt7996.h
+@@ -8,6 +8,7 @@
+ 
+ #include <linux/interrupt.h>
+ #include <linux/ktime.h>
++#include <linux/bitops.h>
+ #include "../mt76_connac.h"
+ #include "regs.h"
+ 
+@@ -301,6 +302,12 @@
+ 
+ 	struct mt76_connac_sta_key_conf bip;
+ 
++	/* number of distinct RX BA (A-MPDU) sessions this link established
++	 * during the current association (monotonic).  A client that runs
++	 * several active TIDs leaves more per-wcid NPU reorder state behind at
++	 * disconnect; only those are candidates for stale-wcid avoidance. */
++	u8 rx_ba_tids;
++
+ 	struct {
+ 		u8 flowid_mask;
+ 		struct mt7996_twt_flow flow[MT7996_MAX_STA_TWT_AGRT];
+@@ -494,6 +501,16 @@
+ 		bool hw_init_done:1;
+ 		bool restart:1;
+ 	} recovery;
++	/* wcids freed by station teardown whose per-wcid NPU flow context is
++	 * never cleared.  Reusing one lets a reconnecting station inherit a
++	 * dead context and its uplink stops being offloaded (FOE_ID=0 storm),
++	 * so allocations skip these indices. */
++	unsigned long npu_stale[BITS_TO_LONGS(MT76_N_WCIDS)];
++	/* rotating cursor over npu_stale: when the fresh-wcid pool is
++	 * exhausted we recycle stale indices oldest-first starting here, so an
++	 * index handed out again has had a full rotation of intervening flow
++	 * churn since it was poisoned. */
++	u16 npu_rot_next;
+ 
+ 	/* protects coredump data */
+ 	struct mutex dump_mutex;
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -1191,6 +1191,48 @@
+ 	}
+ }
+ 
++static int mt7996_wcid_alloc_clean(struct mt7996_dev *dev, int size)
++{
++	int i;
++
++	/* Avoid immediately reusing a wcid freed by a station teardown: the
++	 * NPU keeps a per-wcid flow context that is never reset, so a
++	 * reconnecting station reusing the index inherits a dead context and
++	 * its uplink can no longer be offloaded (FOE_ID=0 storm).  Hand out a
++	 * fresh index whenever one exists. */
++	for (i = 0; i < size; i++) {
++		u32 *mask = dev->mt76.wcid_mask;
++
++		if (mask[i / 32] & BIT(i % 32))
++			continue;
++		if (test_bit(i, dev->npu_stale))
++			continue;
++		return __mt76_wcid_alloc(mask, i, size);
++	}
++
++	/* Fresh pool is exhausted: recycle stale indices oldest-first through
++	 * a persistent rotating cursor.  An index is only handed out again
++	 * after the cursor has wrapped the whole region, i.e. after a full
++	 * rotation of intervening associations whose offloaded flows must have
++	 * displaced the stale NPU context that poisoned it. */
++	i = dev->npu_rot_next;
++	do {
++		u32 *mask = dev->mt76.wcid_mask;
++
++		if (!(mask[i / 32] & BIT(i % 32)))
++			break;
++		if (++i == size)
++			i = 0;
++	} while (i != dev->npu_rot_next);
++
++	dev->npu_rot_next = (i + 1 == size) ? 0 : i + 1;
++
++	if (!(dev->mt76.wcid_mask[i / 32] & BIT(i % 32)))
++		return __mt76_wcid_alloc(dev->mt76.wcid_mask, i, size);
++
++	return mt76_wcid_alloc(dev->mt76.wcid_mask, size);
++}
++
+ static int
+ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
+ 			 struct ieee80211_bss_conf *link_conf,
+@@ -1206,9 +1248,11 @@
+ 	if (!phy)
+ 		return -EINVAL;
+ 
+-	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT7996_WTBL_STA);
++	idx = mt7996_wcid_alloc_clean(dev, MT7996_WTBL_STA);
+ 	if (idx < 0)
+ 		return -ENOSPC;
++	if (idx < MT76_N_WCIDS && test_bit(idx, dev->npu_stale))
++		clear_bit(idx, dev->npu_stale);
+ 
+ 	if (msta->deflink_id == IEEE80211_LINK_UNSPECIFIED) {
+ 		msta_link = &msta->deflink;
+@@ -1311,6 +1355,12 @@
+ 		rcu_assign_pointer(msta->link[link_id], NULL);
+ 		rcu_assign_pointer(dev->mt76.wcid[msta_link->wcid.idx], NULL);
+ 		mt76_wcid_mask_clear(dev->mt76.wcid_mask, msta_link->wcid.idx);
++		/* only stash the index if the client ran concurrent RX BA
++		 * sessions (the multi-TID / iPhone-like footprint); single-TID
++		 * clients do not leave the stale NPU per-wcid context behind */
++		if (msta_link->wcid.idx < MT76_N_WCIDS &&
++		    msta->deflink.rx_ba_tids > 1)
++			set_bit(msta_link->wcid.idx, dev->npu_stale);
+ 		if (msta_link != &msta->deflink)
+ 			kfree_rcu(msta_link, rcu_head);
+ 	}
+@@ -1709,8 +1759,10 @@
+ 		 * multiple links, store the AMPDU state for reordering in the
+ 		 * primary link
+ 		 */
+-		mt76_rx_aggr_start(&dev->mt76, &msta->deflink.wcid, tid,
+-				   ssn, params->buf_size);
++		ret = mt76_rx_aggr_start(&dev->mt76, &msta->deflink.wcid,
++					 tid, ssn, params->buf_size);
++		if (!ret)
++			msta->deflink.rx_ba_tids++;
+ 		ret = mt7996_mcu_add_rx_ba(dev, params, vif, true);
+ 		break;
+ 	case IEEE80211_AMPDU_RX_STOP:
