@@ -1,0 +1,157 @@
+Subject: [PATCH] wifi: mt76: reclaim tokens whose txfree completion was lost
+
+Tokens of frames without per-mpdu status tracking (NO_ACK broadcast/
+multicast data) are only released by the txfree event. If that event
+is lost, the token, the skb and its pending AQL airtime leak forever:
+mt76_tx_status_check() only sweeps wcid->pktid, which never sees
+NO_ACK frames. On MT7996 the leaked airtime accumulates until mac80211
+gates all broadcast/multicast TXQs at the AQL multicast limit,
+silently killing broadcast/multicast traffic on all bands until
+reboot.
+
+Fix this by stamping the queue time on every skb and reclaiming from
+mt7996_mac_work tokens whose non-pktid skb has been pending for more
+than MT7996_TOKEN_SKB_TIMEOUT, completing the skb so mac80211 releases
+the pending airtime. Frames tracked in wcid->pktid are left to the
+existing txs/timeout path.
+
+---
+--- a/mt76.h
++++ b/mt76.h
+@@ -2084,6 +2084,8 @@
+ 
+ struct mt76_txwi_cache *
+ mt76_token_release(struct mt76_dev *dev, int token, bool *wake);
++bool mt76_tx_token_reclaim(struct mt76_dev *dev, struct list_head *list,
++			   unsigned long timeout);
+ int mt76_token_consume(struct mt76_dev *dev, struct mt76_txwi_cache **ptxwi);
+ void __mt76_set_tx_blocked(struct mt76_dev *dev, bool blocked);
+ struct mt76_txwi_cache *mt76_rx_token_release(struct mt76_dev *dev, int token);
+--- a/tx.c
++++ b/tx.c
+@@ -129,6 +129,8 @@
+ 
+ 	memset(cb, 0, sizeof(*cb));
+ 
++	cb->jiffies = jiffies;
++
+ 	if (!wcid)
+ 		return MT_PACKET_ID_NO_ACK;
+ 
+@@ -1056,6 +1058,59 @@
+ }
+ EXPORT_SYMBOL_GPL(mt76_token_release);
+ 
++bool mt76_tx_token_reclaim(struct mt76_dev *dev, struct list_head *list,
++			   unsigned long timeout)
++{
++	struct mt76_txwi_cache *t;
++	bool wake = false;
++	int id;
++
++	spin_lock_bh(&dev->token_lock);
++
++	idr_for_each_entry(&dev->token, t, id) {
++		struct sk_buff *skb = t->skb;
++		struct mt76_tx_cb *cb;
++
++		if (!skb)
++			continue;
++
++		cb = mt76_tx_skb_cb(skb);
++		if (cb->pktid >= MT_PACKET_ID_FIRST)
++			continue;
++
++		if (!cb->jiffies ||
++		    time_is_after_jiffies(cb->jiffies + timeout))
++			continue;
++
++		idr_remove(&dev->token, id);
++		dev->token_count--;
++
++		if (t->qid == MT_TXQ_PSD) {
++			struct mt76_phy *mphy = mt76_dev_phy(dev, t->phy_idx);
++			if (atomic_dec_and_test(&mphy->mgmt_tx_pending))
++				wake_up(&dev->tx_wait);
++		}
++
++#ifdef CONFIG_NET_MEDIATEK_SOC_WED
++		if (mtk_wed_device_active(&dev->mmio.wed) &&
++		    id >= dev->mmio.wed.wlan.token_start &&
++		    --dev->wed_token_count == 0)
++			wake_up(&dev->tx_wait);
++#endif
++
++		list_add_tail(&t->list, list);
++	}
++
++	if (dev->token_count < dev->token_size - MT76_TOKEN_FREE_THR &&
++	    dev->phy.q_tx[0]->blocked)
++		wake = true;
++
++	spin_unlock_bh(&dev->token_lock);
++
++	return wake;
++}
++EXPORT_SYMBOL_GPL(mt76_tx_token_reclaim);
++
+ struct mt76_txwi_cache *
+ mt76_rx_token_release(struct mt76_dev *dev, int token)
+ {
+--- a/mt7996/mt7996.h
++++ b/mt7996/mt7996.h
+@@ -20,6 +20,7 @@
+ 					 mt7996_max_interface_num(dev))
+ 
+ #define MT7996_WATCHDOG_TIME		(HZ / 10)
++#define MT7996_TOKEN_SKB_TIMEOUT	(5 * HZ)
+ #define MT7996_RESET_TIMEOUT		(30 * HZ)
+ 
+ #define MT7996_TX_RING_SIZE		2048
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -3005,6 +3005,36 @@
+ 	mutex_unlock(&dev->mt76.mutex);
+ }
+ 
++static void
++mt7996_mac_token_check(struct mt7996_dev *dev)
++{
++	struct mt76_txwi_cache *t, *tmp;
++	LIST_HEAD(txwi_list);
++	LIST_HEAD(free_list);
++	struct sk_buff *skb, *skb_tmp;
++	bool wake;
++
++	wake = mt76_tx_token_reclaim(&dev->mt76, &txwi_list,
++				     MT7996_TOKEN_SKB_TIMEOUT);
++	if (list_empty(&txwi_list))
++		return;
++
++	list_for_each_entry_safe(t, tmp, &txwi_list, list) {
++		list_del_init(&t->list);
++		mt7996_txwi_free(dev, t, NULL, NULL, &free_list);
++	}
++
++	if (wake)
++		mt76_set_tx_blocked(&dev->mt76, false);
++
++	mt76_worker_schedule(&dev->mt76.tx_worker);
++
++	list_for_each_entry_safe(skb, skb_tmp, &free_list, list) {
++		skb_list_del_init(skb);
++		consume_skb(skb);
++	}
++}
++
+ void mt7996_mac_work(struct work_struct *work)
+ {
+ 	struct mt7996_phy *phy;
+@@ -3033,6 +3063,7 @@
+ 
+ 	mt76_beacon_mon_check(mphy);
+ 	mt76_tx_status_check(mphy->dev, false);
++	mt7996_mac_token_check(phy->dev);
+ 
+ 	ieee80211_queue_delayed_work(mphy->hw, &mphy->mac_work,
+ 				     MT7996_WATCHDOG_TIME);
