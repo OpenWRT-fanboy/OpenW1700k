@@ -1,0 +1,14 @@
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1382,9 +1382,9 @@ mt7996_mac_tx_free(struct mt7996_dev *dev, void *data, int len)
+ 	for (cur_info = &tx_free[2]; count < total; cur_info++) {
+ 		u32 msdu, info;
+ 		u8 i;
+ 
+-		if (WARN_ON_ONCE((void *)cur_info >= end))
+-			return;
++		if ((void *)cur_info >= end)
++			break;
+ 		/* 1'b1: new wcid pair.
+ 		 * 1'b0: msdu_id with the same 'wcid pair' as above.
+ 		 */
