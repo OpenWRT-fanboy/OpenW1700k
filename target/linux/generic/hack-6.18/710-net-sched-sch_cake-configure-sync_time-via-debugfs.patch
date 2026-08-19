@@ -34,7 +34,7 @@ Signed-off-by: Jonas Köppeler <j.koeppeler@tu-berlin.de>
  
  /* struct cobalt_params - contains codel and blue parameters
   * @interval:	codel initial drop rate
-@@ -2016,7 +2019,7 @@ static struct sk_buff *cake_dequeue(stru
+@@ -2015,7 +2018,7 @@ static struct sk_buff *cake_dequeue(stru
  	u32 len;
  
  	if (q->config->is_shared && q->rate_ns &&
