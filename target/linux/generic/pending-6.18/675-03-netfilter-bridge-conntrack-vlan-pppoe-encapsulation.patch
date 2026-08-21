@@ -26,32 +26,23 @@
  #include <linux/netfilter/nf_tables.h>
  #include <net/netfilter/nf_tables.h>
  
-@@ -237,45 +241,148 @@
+@@ -237,45 +241,117 @@
  	return 0;
  }
  
 +static int nf_ct_bridge_inner(struct sk_buff *skb,
-+			      struct nf_bridge_frag_data *data)
++			      struct nf_bridge_frag_data *data,
++			      __be16 *proto)
 +{
 +	struct vlan_hdr *vhdr;
 +	int offset = 0;
-+	__be16 proto;
 +
 +	data->inner_vlan_present = false;
 +	data->pppoe_present = false;
 +
-+	proto = skb->protocol;
++	*proto = skb->protocol;
 +
-+	if (proto == htons(ETH_P_8021Q)) {
-+		/* A single outer tag is normally stripped into skb->vlan_tci by
-+		 * skb_vlan_untag() before this hook runs, so an in-frame 802.1Q
-+		 * header here is the remaining tag of a Q-in-Q frame.  It sits
-+		 * at skb->data (skb_mac_header() points at the outer header),
-+		 * so read the 4-byte struct vlan_hdr there -- not a full
-+		 * vlan_ethhdr from skb_mac_header(), which would yield the
-+		 * outer tag's TCI and the inner tag's TPID instead of the
-+		 * payload ethertype.
-+		 */
++	if (*proto == htons(ETH_P_8021Q)) {
 +		if (!pskb_may_pull(skb, VLAN_HLEN))
 +			return -1;
 +
@@ -59,8 +50,9 @@
 +		data->inner_vlan_present = true;
 +		data->inner_vlan_tci = ntohs(vhdr->h_vlan_TCI);
 +		data->inner_vlan_proto = vhdr->h_vlan_encapsulated_proto;
++		*proto = data->inner_vlan_proto;
 +		offset = VLAN_HLEN;
-+	} else if (proto == htons(ETH_P_PPP_SES)) {
++	} else if (*proto == htons(ETH_P_PPP_SES)) {
 +		struct pppoe_hdr *phdr;
 +
 +		if (!pskb_may_pull(skb,
@@ -70,53 +62,32 @@
 +
 +		phdr = (struct pppoe_hdr *)(skb_mac_header(skb) + ETH_HLEN);
 +		data->pppoe_sid = phdr->sid;
-+		/* PPP protocol id immediately follows the 6-byte PPPoE
-+		 * header (PPPOE_SES_HLEN is 8 = PPPoE hdr + PPP proto, so
-+		 * use sizeof(struct pppoe_hdr) = 6 to locate the PPP proto).
-+		 */
 +		data->pppoe_proto = *(__be16 *)((void *)phdr +
 +						sizeof(struct pppoe_hdr));
 +		offset = PPPOE_SES_HLEN;
 +
-+		proto = data->pppoe_proto;
-+		if (proto == htons(ETH_P_8021Q)) {
++		if (data->pppoe_proto == htons(ETH_P_8021Q)) {
 +			if (!pskb_may_pull(skb,
 +					   skb_mac_offset(skb) + ETH_HLEN +
 +					   offset + VLAN_HLEN))
 +				return -1;
 +
-+			/* VLAN tag inside PPPoE: 4-byte 802.1Q tag, no
-+			 * embedded MACs -- use struct vlan_hdr (not
-+			 * vlan_ethhdr) to avoid reading past the skb.
-+			 */
 +			vhdr = (struct vlan_hdr *)(skb_mac_header(skb) +
 +						   ETH_HLEN + PPPOE_SES_HLEN);
 +			data->inner_vlan_tci = ntohs(vhdr->h_vlan_TCI);
 +			data->inner_vlan_proto = vhdr->h_vlan_encapsulated_proto;
++			*proto = data->inner_vlan_proto;
 +			offset += VLAN_HLEN;
 +			data->inner_vlan_present = true;
++		} else if (data->pppoe_proto == htons(PPP_IP)) {
++			*proto = htons(ETH_P_IP);
++		} else if (data->pppoe_proto == htons(PPP_IPV6)) {
++			*proto = htons(ETH_P_IPV6);
 +		}
 +		data->pppoe_present = true;
 +	}
 +
 +	return offset;
-+}
-+
-+static __be16 nf_ct_bridge_resolve_proto(const struct nf_bridge_frag_data *data,
-+					__be16 fallback)
-+{
-+	if (data->pppoe_present) {
-+		if (data->inner_vlan_present)
-+			return data->inner_vlan_proto;
-+		if (data->pppoe_proto == htons(PPP_IP))
-+			return htons(ETH_P_IP);
-+		if (data->pppoe_proto == htons(PPP_IPV6))
-+			return htons(ETH_P_IPV6);
-+		return fallback;
-+	}
-+	if (data->inner_vlan_present)
-+		return data->inner_vlan_proto;
-+	return fallback;
 +}
 +
  static unsigned int nf_ct_bridge_pre(void *priv, struct sk_buff *skb,
@@ -126,9 +97,9 @@
 +	struct nf_bridge_frag_data data;
  	enum ip_conntrack_info ctinfo;
  	struct nf_conn *ct;
-+	__be16 proto;
  	u32 len;
 -	int ret;
++	__be16 proto = skb->protocol;
 +	int offset, ret;
  
  	ct = nf_ct_get(skb, &ctinfo);
@@ -137,13 +108,11 @@
  		return NF_ACCEPT;
  
 -	switch (skb->protocol) {
-+	offset = nf_ct_bridge_inner(skb, &data);
++	offset = nf_ct_bridge_inner(skb, &data, &proto);
 +	if (offset < 0) {
 +		offset = 0;
 +		goto do_not_track_push;
 +	}
-+
-+	proto = nf_ct_bridge_resolve_proto(&data, skb->protocol);
 +
 +	switch (proto) {
  	case htons(ETH_P_IP):
@@ -183,7 +152,7 @@
  
  		bridge_state.pf = NFPROTO_IPV6;
  		ret = nf_ct_br_defrag6(skb, &bridge_state);
-@@ -283,11 +390,16 @@
+@@ -283,11 +359,16 @@
  	default:
  		nf_ct_set(skb, NULL, IP_CT_UNTRACKED);
  		return NF_ACCEPT;
@@ -200,29 +169,26 @@
  	return nf_conntrack_in(skb, &bridge_state);
  }
  
-@@ -341,37 +453,85 @@
+@@ -341,37 +422,78 @@
  				  struct sk_buff *))
  {
  	struct nf_bridge_frag_data data;
-+	__be16 proto;
++	__be16 proto = skb->protocol;
 +	int offset;
  
  	if (!BR_INPUT_SKB_CB(skb)->frag_max_size)
  		return NF_ACCEPT;
  
-+	offset = nf_ct_bridge_inner(skb, &data);
++	offset = nf_ct_bridge_inner(skb, &data, &proto);
 +	if (offset < 0)
 +		return NF_ACCEPT;
 +
  	nf_ct_bridge_frag_save(skb, &data);
 -	switch (skb->protocol) {
-+
 +	if (offset > 0) {
 +		__skb_pull(skb, offset);
 +		skb_reset_network_header(skb);
 +	}
-+
-+	proto = nf_ct_bridge_resolve_proto(&data, skb->protocol);
 +
 +	switch (proto) {
  	case htons(ETH_P_IP):
@@ -265,9 +231,6 @@
 +	if (data->inner_vlan_present) {
 +		struct vlan_hdr *vhdr;
 +
-+		/* Write relative to skb->data, not skb_mac_header(): fragments
-+		 * produced by ip_frag_next() have mac_header set to ~0U.
-+		 */
 +		skb_push(skb, VLAN_HLEN);
 +		vhdr = (struct vlan_hdr *)skb->data;
 +		vhdr->h_vlan_TCI = htons(data->inner_vlan_tci);
@@ -285,7 +248,6 @@
 +		phdr->type = 1;
 +		phdr->sid = data->pppoe_sid;
 +		phdr->length = htons(skb->len - sizeof(struct pppoe_hdr));
-+		/* PPP protocol id follows the 6-byte PPPoE header */
 +		ppp_proto = (__be16 *)((void *)phdr + sizeof(struct pppoe_hdr));
 +		*ppp_proto = data->pppoe_proto;
 +		skb->protocol = htons(ETH_P_PPP_SES);

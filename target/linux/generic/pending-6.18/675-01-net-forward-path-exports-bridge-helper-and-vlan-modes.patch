@@ -69,21 +69,10 @@
  		path->bridge.vlan_mode = DEV_PATH_BR_VLAN_UNTAG_HW;
  	else
  		path->bridge.vlan_mode = DEV_PATH_BR_VLAN_UNTAG;
-@@ -1554,6 +1557,35 @@ int br_vlan_get_info_rcu(const struct ne
+@@ -1554,6 +1557,24 @@ int br_vlan_get_info_rcu(const struct ne
  }
  EXPORT_SYMBOL_GPL(br_vlan_get_info_rcu);
  
-+/**
-+ * br_vlan_get_offload_info_rcu - get VLAN id and protocol for bridge flow offload
-+ * @dev: bridge port network device
-+ * @skb: packet buffer
-+ * @proto: output for the bridge VLAN protocol (set only when return value != 0)
-+ *
-+ * When VLAN filtering is enabled, resolves the VLAN id for flow offload (skb
-+ * VLAN tag id if present, PVID otherwise) and writes the bridge VLAN protocol
-+ * to @proto. Returns 0 when filtering is off or @dev is not a bridge port.
-+ * Single br_port_get_rcu() lookup. Must be called under RCU read lock.
-+ */
 +u16 br_vlan_get_offload_info_rcu(const struct net_device *dev,
 +				 const struct sk_buff *skb, __be16 *proto)
 +{
