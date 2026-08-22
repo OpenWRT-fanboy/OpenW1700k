@@ -133,7 +133,7 @@
  			break;
  		}
  	}
-@@ -189,22 +200,74 @@
+@@ -189,22 +200,75 @@
  	return found;
  }
  
@@ -156,8 +156,8 @@
  	struct nft_forward_info info = {};
  	unsigned char ha[ETH_ALEN];
  	int i;
- 
--	if (nft_dev_fill_forward_path(route, dst, ct, dir, ha, &stack) >= 0)
++	int err;
++
 +	memset(ha, 0, sizeof(ha));
 +
 +	if (is_bridging) {
@@ -202,7 +202,8 @@
 +		}
 +		rcu_read_unlock();
 +	}
-+
+ 
+-	if (nft_dev_fill_forward_path(route, dst, ct, dir, ha, &stack) >= 0)
 +	if (nft_dev_fill_forward_path(&ctx, dst, ct, dir, ha, &stack) >= 0)
  		nft_dev_path_info(&stack, &info, ha, &ft->data);
  
@@ -215,14 +216,16 @@
  
  	route->tuple[!dir].in.ifindex = info.indev->ifindex;
  	for (i = 0; i < info.num_encaps; i++) {
-@@ -221,54 +284,98 @@
+@@ -221,54 +285,105 @@
  		route->tuple[dir].out.hw_ifindex = info.hw_outdev->ifindex;
  		route->tuple[dir].xmit_type = info.xmit_type;
  	}
 +
 +	return 0;
-+}
-+
+ }
+ 
+-int nft_flow_route(const struct nft_pktinfo *pkt, const struct nf_conn *ct,
+-		   struct nf_flow_route *route, enum ip_conntrack_dir dir,
 +static struct dst_entry *
 +nft_flow_alloc_dst(const struct nft_pktinfo *pkt, const struct nf_conn *ct,
 +		   enum ip_conntrack_dir dir, struct net_device *dev)
@@ -240,10 +243,8 @@
 +	}
 +	}
 +	return NULL;
- }
- 
--int nft_flow_route(const struct nft_pktinfo *pkt, const struct nf_conn *ct,
--		   struct nf_flow_route *route, enum ip_conntrack_dir dir,
++}
++
 +int nft_flow_route(const struct nft_pktinfo *pkt,
 +		   const struct nf_conn *ct,
 +		   struct nf_flow_route *route,
@@ -342,8 +343,15 @@
  	    route->tuple[!dir].xmit_type == FLOW_OFFLOAD_XMIT_NEIGH) {
 -		nft_dev_forward_path(route, ct, dir, ft);
 -		nft_dev_forward_path(route, ct, !dir, ft);
-+		nft_dev_forward_path(pkt, is_bridging, route, ct, dir, ft);
-+		nft_dev_forward_path(pkt, is_bridging, route, ct, !dir, ft);
++		err = nft_dev_forward_path(pkt, is_bridging, route, ct, dir, ft);
++		if (!err)
++			err = nft_dev_forward_path(pkt, is_bridging, route,
++						   ct, !dir, ft);
++		if (err && is_bridging) {
++			dst_release(route->tuple[dir].dst);
++			dst_release(route->tuple[!dir].dst);
++			return err;
++		}
  	}
  
  	return 0;
