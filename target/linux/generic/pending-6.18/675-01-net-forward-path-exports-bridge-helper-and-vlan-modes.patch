@@ -19,7 +19,7 @@
  	return false;
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -3350,6 +3351,8 @@
+@@ -3363,6 +3363,8 @@
  int dev_fill_metadata_dst(struct net_device *dev, struct sk_buff *skb);
  int dev_fill_forward_path(const struct net_device *dev, const u8 *daddr,
  			  struct net_device_path_stack *stack);
@@ -30,7 +30,7 @@
  struct net_device *__dev_get_by_name(struct net *net, const char *name);
 --- a/net/bridge/br_vlan.c
 +++ b/net/bridge/br_vlan.c
-@@ -1554,6 +1557,23 @@
+@@ -1554,6 +1554,23 @@
  }
  EXPORT_SYMBOL_GPL(br_vlan_get_info_rcu);
  
