@@ -548,6 +548,10 @@ set_flow_offload() {
 		uci delete firewall.@defaults[0].flow_offloading_hw 2>/dev/null
 	fi
 	uci commit firewall
+	# Emit the same config.change event rpcd sends after a LuCI commit,
+	# so procd reloads all firewall subscribers (firewall itself plus
+	# bridge-hw-offload) instead of only firewall.
+	ubus call service event '{ "type": "config.change", "data": { "package": "firewall" } }' >/dev/null 2>&1
 	/etc/init.d/firewall reload >/dev/null 2>&1 &
 	printf '{"result":"ok","enabled":%d}' "$enabled"
 }
