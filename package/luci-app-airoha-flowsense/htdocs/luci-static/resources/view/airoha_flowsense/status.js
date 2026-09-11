@@ -1525,14 +1525,6 @@ return view.extend({
 					E('label',{'style':'display:flex;align-items:center;gap:6px;font-size:13px'},[
 						E('span',{'id':'flow-offload-badge','class':'offload-badge '+(flo.enabled?'offload-on':'offload-off')},_('HW Flow Offload')),
 						renderFlowOffloadSelect(flo.enabled)
-					]),
-					E('label',{'style':'display:flex;align-items:center;gap:6px;font-size:13px'},[
-						E('span',{'id':'vlan-offload-badge','class':'offload-badge '+(vo.enabled?'offload-on':'offload-off')},_('VLAN Offload')),
-						renderVlanOffloadSelect(vo.enabled)
-					]),
-					E('label',{'style':'display:flex;align-items:center;gap:6px;font-size:13px'},[
-						E('span',{'id':'pppoe-offload-badge','class':'offload-badge '+(ppo.enabled?'offload-on':'offload-off')},_('PPPoE Offload')),
-						renderPppoeOffloadSelect(ppo.enabled)
 					])
 				]),
 				E('div',{'style':'margin-top:12px'}, renderPpeTerminal(ppe))
