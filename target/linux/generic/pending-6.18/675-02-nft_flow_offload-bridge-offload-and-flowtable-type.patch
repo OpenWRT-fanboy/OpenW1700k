@@ -126,7 +126,7 @@
  			break;
  		}
  	}
-@@ -189,22 +200,58 @@
+@@ -189,22 +200,52 @@
  	return found;
  }
  
@@ -165,19 +165,13 @@
 +			ctx.num_vlans = 1;
 +			ctx.vlan[0].id = vlan_id;
 +			ctx.vlan[0].proto = vlan_proto;
-+			if (info.num_encaps < NF_FLOW_TABLE_ENCAP_MAX) {
-+				info.encap[info.num_encaps].id = vlan_id;
-+				info.encap[info.num_encaps].proto = vlan_proto;
-+				info.num_encaps++;
-+			}
++			info.encap[0].id = vlan_id;
++			info.encap[0].proto = vlan_proto;
++			info.num_encaps = 1;
 +		} else if (skb_vlan_tag_present(pkt->skb)) {
-+			if (info.num_encaps < NF_FLOW_TABLE_ENCAP_MAX) {
-+				info.encap[info.num_encaps].id =
-+					skb_vlan_tag_get_id(pkt->skb);
-+				info.encap[info.num_encaps].proto =
-+					pkt->skb->vlan_proto;
-+				info.num_encaps++;
-+			}
++			info.encap[0].id = skb_vlan_tag_get_id(pkt->skb);
++			info.encap[0].proto = pkt->skb->vlan_proto;
++			info.num_encaps = 1;
 +		}
 +		rcu_read_unlock();
 +	}
