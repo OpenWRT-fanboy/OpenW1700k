@@ -1,0 +1,69 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Fri, 10 Jul 2026 09:54:09 +0200
+Subject: [PATCH] netfilter: flowtable: tear down flow entries with stale dst from GC
+
+In case of route updates, tear down flow entries with stale dst to give
+them a chance to obtain a fresh route.
+
+This is specifically useful for hardware offloaded entries, where the
+flowtable software dataplane sees no packet, where the existing check
+for stale dst entries does not help.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+
+OpenWrt: 6.18 carries its own xmit_type-gated copy of nf_flow_dst_check()
+in nf_flow_table_ip.c; drop it in favor of the shared helper, but keep
+the xmit_type gate: on this base tuple.dst_cache shares a union with the
+DIRECT xmit out.ifidx/hw_ifidx fields, so a NULL check alone would treat
+DIRECT flows' interface indexes as a dst pointer and crash the fast path.
+Upstream can rely on the NULL check only because fa7395c moved dst_cache
+out of that union, which 6.18 lacks. Drop when base contains upstream
+commits edd51a23 and fa7395c.
+---
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -290,6 +290,15 @@ int flow_offload_add(struct nf_flowtable
+ void flow_offload_refresh(struct nf_flowtable *flow_table,
+ 			  struct flow_offload *flow, bool force);
+ 
++static inline bool nf_flow_dst_check(struct flow_offload_tuple *tuple)
++{
++	if (tuple->xmit_type != FLOW_OFFLOAD_XMIT_NEIGH &&
++	    tuple->xmit_type != FLOW_OFFLOAD_XMIT_XFRM)
++		return true;
++
++	return dst_check(tuple->dst_cache, tuple->dst_cookie);
++}
++
+ struct flow_offload_tuple_rhash *flow_offload_lookup(struct nf_flowtable *flow_table,
+ 						     struct flow_offload_tuple *tuple);
+ void nf_flow_table_gc_run(struct nf_flowtable *flow_table);
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -565,6 +565,8 @@ static void nf_flow_offload_gc_step(stru
+ 
+ 	if (nf_flow_has_expired(flow) ||
+ 	    nf_ct_is_dying(flow->ct) ||
++	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple) ||
++	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple) ||
+ 	    nf_flow_custom_gc(flow_table, flow)) {
+ 		flow_offload_teardown(flow);
+ 		teardown = true;
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -258,15 +258,6 @@ static bool nf_flow_exceeds_mtu(const st
+ 	return true;
+ }
+ 
+-static inline bool nf_flow_dst_check(struct flow_offload_tuple *tuple)
+-{
+-	if (tuple->xmit_type != FLOW_OFFLOAD_XMIT_NEIGH &&
+-	    tuple->xmit_type != FLOW_OFFLOAD_XMIT_XFRM)
+-		return true;
+-
+-	return dst_check(tuple->dst_cache, tuple->dst_cookie);
+-}
+-
+ static unsigned int nf_flow_xmit_xfrm(struct sk_buff *skb,
+ 				      const struct nf_hook_state *state,
+ 				      struct dst_entry *dst)
