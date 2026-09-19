@@ -1,0 +1,17 @@
+Subject: [PATCH] crypto: eip93: drop meaningless IRQF_ONESHOT flag
+
+The driver passes a NULL thread function, for which IRQF_ONESHOT is
+a no-op, and __setup_irq() warns about exactly this combination.
+Drop the flag; behavior is unchanged.
+---
+--- a/drivers/crypto/inside-secure/eip93/eip93-main.c
++++ b/drivers/crypto/inside-secure/eip93/eip93-main.c
+@@ -431,7 +431,7 @@ static int eip93_crypto_probe(struct pla
+ 		return eip93->irq;
+ 
+ 	ret = devm_request_threaded_irq(eip93->dev, eip93->irq, eip93_irq_handler,
+-					NULL, IRQF_ONESHOT,
++					NULL, 0,
+ 					dev_name(eip93->dev), eip93);
+ 	if (ret)
+ 		return ret;
