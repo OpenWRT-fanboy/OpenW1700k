@@ -16,15 +16,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/drivers/clk/clk-en7523.c
 +++ b/drivers/clk/clk-en7523.c
-@@ -12,6 +12,7 @@
- #include <linux/reset-controller.h>
+@@ -13,6 +13,7 @@
  #include <dt-bindings/clock/en7523-clk.h>
+ #include <dt-bindings/reset/airoha,en7523-reset.h>
  #include <dt-bindings/reset/airoha,en7581-reset.h>
 +#include <dt-bindings/reset/airoha,an7583-reset.h>
+ #include <dt-bindings/clock/econet,en751221-scu.h>
+ #include <dt-bindings/reset/econet,en751221-scu.h>
  
- #define RST_NR_PER_BANK			32
- 
-@@ -104,6 +105,14 @@ static const u32 bus7581_base[] = { 6000
+@@ -143,6 +144,14 @@ static const u32 bus7581_base[] = { 6000
  static const u32 npu7581_base[] = { 800000000, 750000000, 720000000, 600000000 };
  static const u32 crypto_base[] = { 540000000, 480000000 };
  static const u32 emmc7581_base[] = { 200000000, 150000000 };
@@ -36,10 +36,10 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static const u32 npu7583_base[] = { 666000000, 800000000, 720000000, 600000000 };
 +static const u32 crypto7583_base[] = { 540672000, 400000000 };
 +static const u32 emmc7583_base[] = { 150000000, 200000000 };
+ /* EN751221 */
+ static const u32 gsw751221_base[] = { 500000000, 250000000, 400000000, 200000000 };
  
- static const struct en_clk_desc en7523_base_clks[] = {
- 	{
-@@ -306,6 +315,138 @@ static const struct en_clk_desc en7581_b
+@@ -347,6 +356,138 @@ static const struct en_clk_desc en7581_b
  	}
  };
  
@@ -178,9 +178,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  static const u16 en7581_rst_ofs[] = {
  	REG_RST_CTRL2,
  	REG_RST_CTRL1,
-@@ -369,6 +510,60 @@ static const u16 en7581_rst_map[] = {
- 	[EN7581_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
- };
+@@ -526,6 +667,60 @@ static int en7581_reset_register(struct
+ 				 const u16 *rst_map, int nr_resets,
+ 				 const u16 *rst_reg_ofs);
  
 +static const u16 an7583_rst_map[] = {
 +	/* RST_CTRL2 */
@@ -239,8 +239,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  static u32 en7523_get_base_rate(const struct en_clk_desc *desc, u32 val)
  {
  	if (!desc->base_bits)
-@@ -881,6 +1076,62 @@ static int en7581_clk_hw_init(struct pla
- 	return en7581_reset_register(&pdev->dev, clk_map);
+@@ -1165,6 +1360,62 @@ static int en751221_clk_hw_init(struct p
+ 				     en751221_rst_ofs);
  }
  
 +static int an7583_reset_register(struct device *dev, struct regmap *map)
@@ -302,27 +302,3 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  static int en7523_clk_probe(struct platform_device *pdev)
  {
  	const struct en_clk_soc_data *soc_data;
-@@ -940,9 +1191,23 @@ static const struct en_clk_soc_data en75
- 	.hw_init = en7581_clk_hw_init,
- };
- 
-+static const struct en_clk_soc_data an7583_data = {
-+	.probe_child = true,
-+	.base_clks = an7583_base_clks,
-+	/* We increment num_clocks by 1 to account for additional PCIe clock */
-+	.num_clocks = ARRAY_SIZE(an7583_base_clks) + 1,
-+	.pcie_ops = {
-+		.is_enabled = en7581_pci_is_enabled,
-+		.enable = en7581_pci_enable,
-+		.disable = en7581_pci_disable,
-+	},
-+	.hw_init = an7583_clk_hw_init,
-+};
-+
- static const struct of_device_id of_match_clk_en7523[] = {
- 	{ .compatible = "airoha,en7523-scu", .data = &en7523_data },
- 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
-+	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
- 	{ /* sentinel */ }
- };
- 
