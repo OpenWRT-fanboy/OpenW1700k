@@ -239,7 +239,8 @@ define KernelPackage/dm
     $(LINUX_DIR)/drivers/md/dm-crypt.ko \
     $(LINUX_DIR)/drivers/md/dm-log.ko \
     $(LINUX_DIR)/drivers/md/dm-mirror.ko \
-    $(LINUX_DIR)/drivers/md/dm-region-hash.ko
+    $(LINUX_DIR)/drivers/md/dm-region-hash.ko \
+    $(LINUX_DIR)/lib/crypto/libmd5.ko@ge6.18
   AUTOLOAD:=$(call AutoLoad,30,dm-mod dm-log dm-region-hash dm-mirror dm-crypt,1)
 endef
 
