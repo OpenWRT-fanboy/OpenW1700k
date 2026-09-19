@@ -7,9 +7,7 @@ MENU_TITLE:=Multiplexer Support
 define KernelPackage/mux-core
   SUBMENU:=$(MENU_TITLE)
   TITLE:=Multiplexer Support
-  KCONFIG:=CONFIG_MULTIPLEXER
-  FILES:=$(LINUX_DIR)/drivers/mux/mux-core.ko
-  AUTOLOAD:=$(call AutoLoad,25,mux-core,1)
+  KCONFIG:=CONFIG_MULTIPLEXER=y
 endef
 
 define KernelPackage/mux-core/description
