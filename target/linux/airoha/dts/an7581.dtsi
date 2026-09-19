@@ -15,6 +15,17 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	/*
+	 * Pin ttyS ids to DT order: both 8250_airoha and 8250_of match
+	 * "airoha,en7523-uart" and whichever binds first takes the first
+	 * free line. Without serial1/serial2 these can steal ttyS0 away
+	 * from console uart1 before it is probed.
+	 */
+	aliases {
+		serial1 = &uart2;
+		serial2 = &hsuart3;
+	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
