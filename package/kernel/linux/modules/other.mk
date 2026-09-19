@@ -31,13 +31,7 @@ define KernelPackage/dma-buf
   SUBMENU:=$(OTHER_MENU)
   TITLE:=DMA shared buffer support
   HIDDEN:=1
-  KCONFIG:=CONFIG_DMA_SHARED_BUFFER
-  ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
-    ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
-      FILES:=$(LINUX_DIR)/drivers/dma-buf/dma-shared-buffer.ko
-    endif
-  endif
-  AUTOLOAD:=$(call AutoLoad,20,dma-shared-buffer)
+  KCONFIG:=CONFIG_DMA_SHARED_BUFFER=y
 endef
 $(eval $(call KernelPackage,dma-buf))
 
@@ -62,7 +56,8 @@ define KernelPackage/eeprom-at24
   TITLE:=EEPROM AT24 support
   KCONFIG:=CONFIG_EEPROM_AT24
   DEPENDS:=+kmod-i2c-core +kmod-regmap-i2c
-  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at24.ko
+  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at24.ko@le6.18 \
+    $(LINUX_DIR)/drivers/nvmem/at24.ko@ge7.3
   AUTOLOAD:=$(call AutoProbe,at24)
 endef
 
@@ -77,7 +72,8 @@ define KernelPackage/eeprom-at25
   SUBMENU:=$(OTHER_MENU)
   TITLE:=EEPROM AT25 support
   KCONFIG:=CONFIG_EEPROM_AT25
-  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at25.ko
+  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at25.ko@le6.18 \
+    $(LINUX_DIR)/drivers/nvmem/at25.ko@ge7.3
   AUTOLOAD:=$(call AutoProbe,at25)
 endef
 
