@@ -814,7 +814,9 @@ define KernelPackage/polynomial
   TITLE:=polynomial support
   KCONFIG:=CONFIG_POLYNOMIAL
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/lib/polynomial.ko
+  FILES:= \
+	$(LINUX_DIR)/lib/polynomial.ko@lt7.1 \
+	$(LINUX_DIR)/lib/math/polynomial.ko@ge7.1
   AUTOLOAD:=$(call AutoProbe, polynomial)
 endef
 
