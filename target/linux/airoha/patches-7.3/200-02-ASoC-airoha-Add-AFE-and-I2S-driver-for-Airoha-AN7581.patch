@@ -29,7 +29,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -754,6 +754,14 @@ F:	Documentation/devicetree/bindings/phy
+@@ -767,6 +767,14 @@ F:	Documentation/devicetree/bindings/phy
  F:	drivers/phy/phy-airoha-pcie-regs.h
  F:	drivers/phy/phy-airoha-pcie.c
  
@@ -72,7 +72,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
  config SND_SOC_MT2701
  	tristate "ASoC support for Mediatek MT2701 chip"
- 	depends on ARCH_MEDIATEK
+ 	depends on ARCH_MEDIATEK || COMPILE_TEST
 --- a/sound/soc/mediatek/Makefile
 +++ b/sound/soc/mediatek/Makefile
 @@ -1,5 +1,6 @@
