@@ -171,9 +171,11 @@ $(eval $(call KernelPackage,libie))
 define KernelPackage/libeth
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Common Intel Ethernet library
-  KCONFIG:=CONFIG_LIBETH
+  KCONFIG:=CONFIG_LIBETH \
+    CONFIG_LIBETH_XDP
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libeth/libeth.ko
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libeth/libeth.ko \
+    $(LINUX_DIR)/drivers/net/ethernet/intel/libeth/libeth_xdp.ko
 endef
 
 define KernelPackage/libeth/description
@@ -190,8 +192,10 @@ define KernelPackage/libphy
 	   CONFIG_PHYLIB_LEDS=y \
 	   CONFIG_MDIO_BUS
   FILES:=$(LINUX_DIR)/drivers/net/phy/libphy.ko \
-    $(LINUX_DIR)/drivers/net/phy/mdio-bus.ko@ge6.18
-  AUTOLOAD:=$(call AutoLoad,15,libphy mdio-bus@ge6.18,1)
+    $(LINUX_DIR)/drivers/net/phy/mdio-bus.ko@eq6.18 \
+    $(LINUX_DIR)/drivers/net/phy/mdio_bus.ko@ge7.1 \
+    $(LINUX_DIR)/drivers/net/phy/phy_package.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,15,libphy mdio-bus@eq6.18 mdio_bus@ge7.1,1)
 endef
 
 define KernelPackage/libphy/description
@@ -235,7 +239,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=+kmod-libphy +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy +(TARGET_airoha||TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
 ifeq ($(KERNEL_PATCHVER),6.12)
   KCONFIG:=CONFIG_MDIO_DEVRES
 endif
@@ -254,7 +258,7 @@ $(eval $(call KernelPackage,mdio-devres))
 define KernelPackage/mdio-gpio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:= Supports GPIO lib-based MDIO busses
-  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_airoha||TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:= \
 	CONFIG_MDIO_BITBANG \
 	CONFIG_MDIO_GPIO
@@ -575,6 +579,22 @@ endef
 $(eval $(call KernelPackage,phy-realtek))
 
 
+define KernelPackage/phy-rtl8261ce
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Realtek RTL8261CE 10GBASE-T PHY driver
+   KCONFIG:=CONFIG_RTL8261CE_PHY
+   DEPENDS:=+kmod-libphy +kmod-hwmon-core
+   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8261ce/rtk-rtl8261ce-phy.ko
+   AUTOLOAD:=$(call AutoLoad,18,rtk-rtl8261ce-phy,1)
+endef
+
+define KernelPackage/phy-rtl8261ce/description
+   Supports the Realtek RTL8261CE 10GBASE-T PHY.
+endef
+
+$(eval $(call KernelPackage,phy-rtl8261ce))
+
+
 define KernelPackage/phy-rtl8261n
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Realtek RTL8261N NBASE-T PHY driver
@@ -646,7 +666,8 @@ define KernelPackage/phy-airoha-en8811h
   DEPENDS:=+airoha-en8811h-firmware +kmod-libphy
   KCONFIG:=CONFIG_AIR_EN8811H_PHY
   FILES:= \
-   $(LINUX_DIR)/drivers/net/phy/air_en8811h.ko
+   $(LINUX_DIR)/drivers/net/phy/air_en8811h.ko \
+   $(LINUX_DIR)/drivers/net/phy/air_phy_lib.ko@ge7.2
   AUTOLOAD:=$(call AutoLoad,18,air_en8811h,1)
 endef
 
@@ -655,6 +676,75 @@ define KernelPackage/phy-airoha-en8811h/description
 endef
 
 $(eval $(call KernelPackage,phy-airoha-en8811h))
+
+
+define KernelPackage/airoha-npu
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Airoha Network Processor Unit support
+  DEPENDS:=@TARGET_airoha +airoha-en7581-mt7996-npu-firmware
+  KCONFIG:=CONFIG_NET_AIROHA_NPU
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/airoha/airoha_npu.ko
+  AUTOLOAD:=$(call AutoLoad,40,airoha_npu,1)
+endef
+
+define KernelPackage/airoha-npu/description
+  Kernel module for Airoha Network Processor Unit (NPU).
+  Required for PPE hardware flow offloading and WiFi WED offloading.
+endef
+
+$(eval $(call KernelPackage,airoha-npu))
+
+
+define KernelPackage/airoha-eth
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Airoha SoC Gigabit Ethernet support
+  DEPENDS:=@TARGET_airoha +kmod-airoha-npu +kmod-of-mdio
+  KCONFIG:=CONFIG_NET_AIROHA
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/airoha/airoha-eth.ko
+  AUTOLOAD:=$(call AutoLoad,41,airoha-eth,1)
+endef
+
+define KernelPackage/airoha-eth/description
+  Kernel module for Airoha SoC Gigabit Ethernet.
+  Includes PPE (Packet Processing Engine) for hardware offloading.
+endef
+
+$(eval $(call KernelPackage,airoha-eth))
+
+
+define KernelPackage/dsa-mt7530
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MediaTek MT7530/MT7531 DSA switch
+  DEPENDS:=@TARGET_airoha +kmod-dsa +kmod-libphy +kmod-mdio-devres
+  KCONFIG:=CONFIG_NET_DSA_MT7530
+  FILES:=$(LINUX_DIR)/drivers/net/dsa/mt7530.ko
+  AUTOLOAD:=$(call AutoLoad,42,mt7530,1)
+endef
+
+define KernelPackage/dsa-mt7530/description
+  Kernel module for MediaTek MT7530/MT7531 Gigabit switch.
+  This is the core switch driver.
+endef
+
+$(eval $(call KernelPackage,dsa-mt7530))
+
+
+define KernelPackage/dsa-mt7530-mmio
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MediaTek MT7530 MMIO interface driver
+  DEPENDS:=@TARGET_airoha +kmod-dsa-mt7530 +kmod-airoha-eth
+  KCONFIG:=CONFIG_NET_DSA_MT7530_MMIO
+  FILES:=$(LINUX_DIR)/drivers/net/dsa/mt7530-mmio.ko
+  AUTOLOAD:=$(call AutoLoad,43,mt7530-mmio,1)
+  DEFAULT:=y if TARGET_airoha_an7581
+endef
+
+define KernelPackage/dsa-mt7530-mmio/description
+  Kernel module for MediaTek MT7530 DSA switch with MMIO interface.
+  Used on Airoha EN7581 SoC with built-in switch.
+endef
+
+$(eval $(call KernelPackage,dsa-mt7530-mmio))
 
 
 define KernelPackage/phy-aquantia
@@ -876,13 +966,11 @@ define KernelPackage/dsa-mxl862xx
   TITLE:=MaxLinear MXL862 switch support
   KCONFIG:= \
     CONFIG_NET_DSA_TAG_MXL_862XX \
-    CONFIG_NET_DSA_TAG_MXL_862XX_8021Q \
     CONFIG_NET_DSA_MXL862
   DEPENDS:=+kmod-dsa +kmod-lib-crc16 +kmod-phy-maxlinear
   FILES:= \
     $(LINUX_DIR)/drivers/net/dsa/mxl862xx/mxl862xx_dsa.ko \
-    $(LINUX_DIR)/net/dsa/tag_mxl862xx.ko \
-    $(LINUX_DIR)/net/dsa/tag_mxl862xx_8021q.ko
+    $(LINUX_DIR)/net/dsa/tag_mxl862xx.ko
   AUTOLOAD:=$(call AutoProbe,mxl862xx_dsa)
 endef
 
@@ -1089,7 +1177,7 @@ $(eval $(call KernelPackage,switch-rtl8306))
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_airoha||TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_econet||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi,1)
@@ -1580,7 +1668,7 @@ $(eval $(call KernelPackage,iavf))
 define KernelPackage/b44
   TITLE:=Broadcom 44xx driver
   KCONFIG:=CONFIG_B44
-  DEPENDS:=@PCI_SUPPORT @!TARGET_bcm47xx_mips74k +!TARGET_bcm47xx:kmod-ssb +kmod-mii +kmod-libphy
+  DEPENDS:=@PCI_SUPPORT @!TARGET_bcm47xx_mips74k +!TARGET_bcm47xx:kmod-ssb +kmod-mii +kmod-libphy +kmod-fixed-phy
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/b44.ko
   AUTOLOAD:=$(call AutoLoad,19,b44,1)
