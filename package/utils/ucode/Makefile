@@ -27,11 +27,13 @@ include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/cmake.mk
 
 CMAKE_OPTIONS += \
+	-DCMAKE_C_FLAGS="-D__u128=unsigned\ __int128" \
 	-DSOVERSION=$(PKG_ABI_VERSION)
 
 CMAKE_HOST_OPTIONS += \
 	-DCMAKE_SKIP_RPATH=FALSE \
-	-DCMAKE_INSTALL_RPATH="${STAGING_DIR_HOSTPKG}/lib"
+	-DCMAKE_INSTALL_RPATH="${STAGING_DIR_HOSTPKG}/lib" \
+	-DCMAKE_C_FLAGS="-D__u128=unsigned\ __int128"
 
 ifeq ($(HOST_OS),Darwin)
   CMAKE_HOST_OPTIONS += \
