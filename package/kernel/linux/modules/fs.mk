@@ -108,7 +108,8 @@ define KernelPackage/fs-smbfs-common
 	CONFIG_SMBFS
   FILES:= \
 	$(LINUX_DIR)/fs/smb/common/cifs_arc4.ko@lt6.18 \
-	$(LINUX_DIR)/fs/smb/common/cifs_md4.ko
+	$(LINUX_DIR)/fs/smb/common/cifs_md4.ko \
+	$(LINUX_DIR)/fs/smb/common/smb_compress.ko@ge7.2
 endef
 
 define KernelPackage/fs-smbfs-common/description
@@ -505,7 +506,8 @@ define KernelPackage/fs-nfs-common-rpcsec
 	CONFIG_RPCSEC_GSS_KRB5
   FILES:= \
 	$(LINUX_DIR)/net/sunrpc/auth_gss/auth_rpcgss.ko \
-	$(LINUX_DIR)/net/sunrpc/auth_gss/rpcsec_gss_krb5.ko
+	$(LINUX_DIR)/net/sunrpc/auth_gss/rpcsec_gss_krb5.ko \
+	$(LINUX_DIR)/crypto/krb5/krb5.ko@ge7.2
   AUTOLOAD:=$(call AutoLoad,31,auth_rpcgss rpcsec_gss_krb5)
 endef
 

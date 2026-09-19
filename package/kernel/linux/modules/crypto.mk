@@ -40,7 +40,7 @@ define KernelPackage/crypto-aead
   KCONFIG:= \
 	CONFIG_CRYPTO_AEAD \
 	CONFIG_CRYPTO_AEAD2
-  FILES:=$(LINUX_DIR)/crypto/aead.ko
+  FILES:=$(LINUX_DIR)/crypto/aead.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,aead,1)
   $(call AddDepends/crypto, +kmod-crypto-null)
 endef
@@ -82,8 +82,11 @@ define KernelPackage/crypto-blake2b
   TITLE:=Support for BLAKE2b cryptographic hash function (RFC 7693)
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:=CONFIG_CRYPTO_BLAKE2B
-  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic)
+  FILES:= \
+	$(LINUX_DIR)/crypto/blake2b_generic.ko@lt6.19 \
+	$(LINUX_DIR)/crypto/blake2b.ko@ge6.19 \
+	$(LINUX_DIR)/lib/crypto/libblake2b.ko@ge6.19
+  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic@lt6.19 blake2b@ge6.19)
   $(call AddDepends/crypto)
 endef
 
@@ -106,7 +109,7 @@ define KernelPackage/crypto-ccm
  TITLE:=Support for Counter with CBC MAC (CCM)
  DEPENDS:=+kmod-crypto-ctr +kmod-crypto-aead
  KCONFIG:=CONFIG_CRYPTO_CCM
- FILES:=$(LINUX_DIR)/crypto/ccm.ko
+ FILES:=$(LINUX_DIR)/crypto/ccm.ko@le6.18
  AUTOLOAD:=$(call AutoLoad,09,ccm)
  $(call AddDepends/crypto)
 endef
@@ -169,7 +172,7 @@ define KernelPackage/crypto-ctr
   TITLE:=Counter Mode CryptoAPI module
   DEPENDS:=+kmod-crypto-manager +kmod-crypto-seqiv
   KCONFIG:=CONFIG_CRYPTO_CTR
-  FILES:=$(LINUX_DIR)/crypto/ctr.ko
+  FILES:=$(LINUX_DIR)/crypto/ctr.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,ctr)
   $(call AddDepends/crypto)
 endef
@@ -289,7 +292,7 @@ define KernelPackage/crypto-gcm
   TITLE:=GCM/GMAC CryptoAPI module
   DEPENDS:=+kmod-crypto-ctr +kmod-crypto-ghash +kmod-crypto-null
   KCONFIG:=CONFIG_CRYPTO_GCM
-  FILES:=$(LINUX_DIR)/crypto/gcm.ko
+  FILES:=$(LINUX_DIR)/crypto/gcm.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,gcm)
   $(call AddDepends/crypto)
 endef
@@ -314,7 +317,7 @@ define KernelPackage/crypto-gf128
   KCONFIG:= \
 	CONFIG_CRYPTO_GF128MUL \
 	CONFIG_CRYPTO_LIB_GF128MUL
-  FILES:=$(LINUX_DIR)/lib/crypto/gf128mul.ko
+  FILES:=$(LINUX_DIR)/lib/crypto/gf128mul.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,gf128mul)
   $(call AddDepends/crypto)
 endef
@@ -349,7 +352,7 @@ $(eval $(call KernelPackage,crypto-ghash))
 define KernelPackage/crypto-hash
   TITLE:=CryptoAPI hash support
   KCONFIG:=CONFIG_CRYPTO_HASH
-  FILES:=$(LINUX_DIR)/crypto/crypto_hash.ko
+  FILES:=$(LINUX_DIR)/crypto/crypto_hash.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,02,crypto_hash,1)
   $(call AddDepends/crypto)
 endef
@@ -707,7 +710,7 @@ define KernelPackage/crypto-manager
   KCONFIG:= \
 	CONFIG_CRYPTO_MANAGER \
 	CONFIG_CRYPTO_MANAGER2
-  FILES:=$(LINUX_DIR)/crypto/cryptomgr.ko
+  FILES:=$(LINUX_DIR)/crypto/cryptomgr.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,cryptomgr,1)
   $(call AddDepends/crypto)
 endef
@@ -773,7 +776,7 @@ $(eval $(call KernelPackage,crypto-michael-mic))
 define KernelPackage/crypto-null
   TITLE:=Null CryptoAPI module
   KCONFIG:=CONFIG_CRYPTO_NULL
-  FILES:=$(LINUX_DIR)/crypto/crypto_null.ko
+  FILES:=$(LINUX_DIR)/crypto/crypto_null.ko@le6.18
   AUTOLOAD:=$(call AutoLoad,09,crypto_null)
   $(call AddDepends/crypto, +kmod-crypto-hash)
 endef
@@ -944,8 +947,11 @@ define KernelPackage/crypto-sha3
   TITLE:=SHA3 digest CryptoAPI module
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= CONFIG_CRYPTO_SHA3
-  FILES:=$(LINUX_DIR)/crypto/sha3_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha3_generic)
+  FILES:= \
+	$(LINUX_DIR)/crypto/sha3_generic.ko@lt6.19 \
+	$(LINUX_DIR)/crypto/sha3.ko@ge6.19 \
+	$(LINUX_DIR)/lib/crypto/libsha3.ko@ge6.19
+  AUTOLOAD:=$(call AutoLoad,09,sha3_generic@lt6.19 sha3@ge6.19)
   $(call AddDepends/crypto)
 endef
 
