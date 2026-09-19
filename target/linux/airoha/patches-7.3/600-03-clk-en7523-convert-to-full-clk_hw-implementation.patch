@@ -16,7 +16,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/drivers/clk/clk-en7523.c
 +++ b/drivers/clk/clk-en7523.c
-@@ -69,6 +69,12 @@ struct en_clk_gate {
+@@ -108,6 +108,12 @@ struct en_clk_gate {
  	struct clk_hw hw;
  };
  
@@ -29,7 +29,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  struct en_rst_data {
  	const u16 *bank_ofs;
  	const u16 *idx_map;
-@@ -471,44 +477,73 @@ static struct clk_hw *en7523_register_pc
+@@ -628,44 +634,73 @@ static struct clk_hw *en7523_register_pc
  	return &cg->hw;
  }
  
@@ -94,10 +94,10 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		en_clk = devm_kzalloc(dev, sizeof(*en_clk), GFP_KERNEL);
 +		if (!en_clk)
 +			return -ENOMEM;
++
++		init.name = desc->name;
  
 -		err = regmap_read(map, reg, &val);
-+		init.name = desc->name;
-+
 +		en_clk->map = map;
 +		en_clk->desc = desc;
 +		en_clk->hw.init = &init;
@@ -110,29 +110,29 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  			return err;
  		}
 -		rate /= en7523_get_div(desc, val);
--
+ 
 -		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
 -		if (IS_ERR(hw)) {
 -			pr_err("Failed to register clk %s: %ld\n",
 -			       desc->name, PTR_ERR(hw));
 -			return PTR_ERR(hw);
 -		}
- 
+-
 -		clk_data->hws[desc->id] = hw;
 +		clk_data->hws[desc->id] = &en_clk->hw;
  	}
  
  	hw = en7523_register_pcie_clk(dev, clk_map);
-@@ -672,7 +707,7 @@ static int en7581_clk_hw_init(struct pla
- {
+@@ -849,7 +884,7 @@ static int en7581_clk_hw_init(struct pla
  	struct regmap *map, *clk_map;
  	void __iomem *base;
+ 	u32 val;
 -	int ret;
 +	int err;
  
  	map = syscon_regmap_lookup_by_compatible("airoha,en7581-chip-scu");
  	if (IS_ERR(map))
-@@ -686,9 +721,9 @@ static int en7581_clk_hw_init(struct pla
+@@ -863,9 +898,9 @@ static int en7581_clk_hw_init(struct pla
  	if (IS_ERR(clk_map))
  		return PTR_ERR(clk_map);
  
