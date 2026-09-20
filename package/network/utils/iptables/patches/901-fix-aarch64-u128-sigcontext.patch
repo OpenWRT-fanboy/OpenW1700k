@@ -1,0 +1,56 @@
+Subject: [PATCH] fix build on aarch64 glibc: provide __u128 before system headers
+
+Kernel 7.3 UAPI asm/sigcontext.h uses __u128 (fpsimd_context.vregs),
+reached via sys/wait.h -> signal.h -> bits/sigcontext.h. The __u128
+typedef from linux/types.h is not visible in this include context,
+breaking the build with "unknown type name __u128". Provide it here,
+guarded to aarch64, before any system header is included. It is spelled
+exactly like the kernel UAPI definition, so a later linux/types.h
+remains a benign identical redefinition.
+---
+--- a/libxtables/xtables.c
++++ b/libxtables/xtables.c
+@@ -16,6 +16,13 @@
+  *	Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+  */
+ #include "config.h"
++#if defined(__aarch64__)
++/* glibc on aarch64 pulls in the kernel asm/sigcontext.h which uses
++ * __u128, but the __u128 typedef from linux/types.h is not visible
++ * in this include context. Spelled exactly like the kernel UAPI
++ * definition so a later linux/types.h is a benign redefinition. */
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif
+ #include <ctype.h>
+ #include <errno.h>
+ #include <fcntl.h>
+--- a/iptables/xshared.c
++++ b/iptables/xshared.c
+@@ -1,4 +1,11 @@
+ #include <config.h>
++#if defined(__aarch64__)
++/* glibc on aarch64 pulls in the kernel asm/sigcontext.h which uses
++ * __u128, but the __u128 typedef from linux/types.h is not visible
++ * in this include context. Spelled exactly like the kernel UAPI
++ * definition so a later linux/types.h is a benign redefinition. */
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif
+ #include <ctype.h>
+ #include <getopt.h>
+ #include <errno.h>
+--- a/iptables/xtables-eb.c
++++ b/iptables/xtables-eb.c
+@@ -21,6 +21,13 @@
+  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+  */
+ #include "config.h"
++#if defined(__aarch64__)
++/* glibc on aarch64 pulls in the kernel asm/sigcontext.h which uses
++ * __u128, but the __u128 typedef from linux/types.h is not visible
++ * in this include context. Spelled exactly like the kernel UAPI
++ * definition so a later linux/types.h is a benign redefinition. */
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif
+ #include <ctype.h>
+ #include <errno.h>
+ #include <getopt.h>
