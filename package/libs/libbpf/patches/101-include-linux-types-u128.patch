@@ -1,0 +1,29 @@
+From: OpenWrt Airoha bring-up <openwrt@airoha>
+Subject: [PATCH] libbpf: provide __u128/__s128 in include/linux/types.h
+
+Kernel 7.3's arch/arm64 UAPI sigcontext.h uses __u128 (6.18 used
+__uint128_t, which needs no typedef). With -I../include in the flags,
+linux/types.h resolves to this compat shim, which lacked the typedefs,
+breaking any TU including <signal.h> on aarch64+glibc.
+
+Mirror the kernel UAPI definitions, guarded by __SIZEOF_INT128__.
+
+Signed-off-by: OpenWrt Airoha bring-up <openwrt@airoha>
+---
+ include/linux/types.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+--- a/include/linux/types.h
++++ b/include/linux/types.h
+@@ -22,6 +22,11 @@
+ typedef __u64 __bitwise __le64;
+ typedef __u64 __bitwise __be64;
+ 
++#ifdef __SIZEOF_INT128__
++typedef __signed__ __int128 __s128 __attribute__((aligned(16)));
++typedef unsigned __int128 __u128 __attribute__((aligned(16)));
++#endif
++
+ #ifndef __aligned_u64
+ # define __aligned_u64 __u64 __attribute__((aligned(8)))
+ #endif
