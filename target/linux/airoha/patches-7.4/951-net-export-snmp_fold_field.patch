@@ -1,0 +1,22 @@
+--- a/net/ipv4/af_inet.c
++++ b/net/ipv4/af_inet.c
+@@ -1663,6 +1663,8 @@ unsigned long snmp_fold_field(void __per
+ 	return res;
+ }
+ 
++EXPORT_SYMBOL_GPL(snmp_fold_field);
++
+ #if BITS_PER_LONG==32
+ 
+ u64 snmp_get_cpu_field64(void __percpu *mib, int cpu, int offt,
+@@ -1695,6 +1697,10 @@ u64 snmp_fold_field64(void __percpu *mib
+ }
+ #endif
+ 
++#if BITS_PER_LONG==32
++EXPORT_SYMBOL_GPL(snmp_fold_field64);
++#endif
++
+ #ifdef CONFIG_IP_MULTICAST
+ static const struct net_protocol igmp_protocol = {
+ 	.handler =	igmp_rcv,
