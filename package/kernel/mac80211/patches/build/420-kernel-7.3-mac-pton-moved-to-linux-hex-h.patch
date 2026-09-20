@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenWrt <openwrt@nobody>
+Date: Sun, 20 Sep 2026 00:00:00 +0000
+Subject: [PATCH] include linux/hex.h where mac_pton/hex_to_bin are used
+
+Since kernel 6.14, mac_pton() and hex_to_bin() are declared in
+linux/hex.h instead of linux/etherdevice.h. Add the missing include to
+avoid implicit declaration errors with -Werror=implicit-function-declaration.
+
+Signed-off-by: OpenWrt <openwrt@nobody>
+---
+ .../wireless/intel/iwlwifi/mvm/debugfs-vif.c | 1 +
+ .../net/wireless/mediatek/mt76/mt7615/debugfs.c | 1 +
+ net/wireless/sysfs.c                  | 1 +
+ 3 files changed, 3 insertions(+)
+
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/debugfs-vif.c
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/debugfs-vif.c
+@@ -5,4 +5,5 @@
+  * Copyright (C) 2016-2017 Intel Deutschland GmbH
+  */
++#include <linux/hex.h>
+ #include "mvm.h"
+ #include "debugfs.h"
+ 
+--- a/drivers/net/wireless/mediatek/mt76/mt7615/debugfs.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7615/debugfs.c
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: BSD-3-Clause-Clear
+ 
++#include <linux/hex.h>
+ #include "mt7615.h"
+ 
+ static int
+--- a/net/wireless/sysfs.c
++++ b/net/wireless/sysfs.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <linux/device.h>
++#include <linux/hex.h>
+ #include <linux/module.h>
+ #include <linux/netdevice.h>
+ #include <linux/nl80211.h>
