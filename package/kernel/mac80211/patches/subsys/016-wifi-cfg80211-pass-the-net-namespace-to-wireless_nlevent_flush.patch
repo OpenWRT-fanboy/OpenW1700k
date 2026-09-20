@@ -1,0 +1,41 @@
+From: fanboy <fanboy@openwrt.org>
+Date: Mon, 09 Nov 2026 19:37:44 -1000
+Subject: [PATCH] wifi: cfg80211: pass the net namespace to wireless_nlevent_flush()
+
+Kernel 7.4-rc2 changed wireless_nlevent_flush() to take the network
+namespace whose queued events are to be flushed, and to flush only that
+namespace (include/net/iw_handler.h:417, net/wireless/wext-core.c:345 of
+linux-7.4-rc2). The in-tree cfg80211 netdev notifier calls
+wireless_nlevent_flush(dev_net(dev)) accordingly
+(net/wireless/core.c:1946).
+
+backports-7.2 still calls the no-argument variant from
+cfg80211_netdev_notifier_call(), which fails to compile against the 7.4
+headers ("too few arguments to function 'wireless_nlevent_flush'").
+Call it with dev_net(dev) behind LINUX_VERSION_IS_GEQ(7,4,0) to match
+the in-tree code, keeping the no-argument call for older kernels.
+
+net/wireless/core.c is the only compiled object referencing the function
+in this configuration: CONFIG_WEXT_CORE and CPTCFG_CFG80211_WEXT are
+both unset, so backports wext-core.o and wext-compat.o/wext-sme.o are
+not built.
+
+Signed-off-by: fanboy <fanboy@openwrt.org>
+---
+ net/wireless/core.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/net/wireless/core.c
++++ b/net/wireless/core.c
+@@ -1864,7 +1864,11 @@ static int cfg80211_netdev_notifier_call
+ 		return NOTIFY_DONE;
+ 	}
+ 
++#if LINUX_VERSION_IS_GEQ(7,4,0)
++	wireless_nlevent_flush(dev_net(dev));
++#else
+ 	wireless_nlevent_flush();
++#endif
+ 
+ 	return NOTIFY_OK;
+ }
