@@ -1,0 +1,14 @@
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -357,8 +357,9 @@
+ 	      FIELD_PREP(AIROHA_FOE_IB1_BIND_UDP, l4proto == IPPROTO_UDP) |
+ 	      FIELD_PREP(AIROHA_FOE_IB1_BIND_VLAN_LAYER, data->vlan.num) |
+ 	      FIELD_PREP(AIROHA_FOE_IB1_BIND_VPM, data->vlan.num) |
+-	      FIELD_PREP(AIROHA_FOE_IB1_BIND_PPPOE, data->pppoe.num) |
+-	      AIROHA_FOE_IB1_BIND_TTL;
++	      FIELD_PREP(AIROHA_FOE_IB1_BIND_PPPOE, data->pppoe.num);
++	if (type != PPE_PKT_TYPE_BRIDGE)
++		val |= AIROHA_FOE_IB1_BIND_TTL;
+ 	hwe->ib1 = val;
+ 
+ 	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG, 0x1f);
