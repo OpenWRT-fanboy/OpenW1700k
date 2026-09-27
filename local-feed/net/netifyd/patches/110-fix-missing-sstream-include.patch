@@ -1,0 +1,22 @@
+Subject: [PATCH] netifyd: include <sstream> for ostringstream use
+
+nd-util.h embeds std::ostringstream without including <sstream>,
+relying on transitive includes that GCC 16's libstdc++ no longer
+provides. Fixes: field 'os' has incomplete type 'std::ostringstream'.
+
+Assisted-by: LLM
+---
+ include/nd-util.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/include/nd-util.h
++++ b/include/nd-util.h
+@@ -17,6 +17,8 @@
+ #ifndef _ND_UTIL_H
+ #define _ND_UTIL_H
+ 
++#include <sstream>
++
+ #define ND_SHA1_BUFFER      4096
+ 
+ #define ND_C_RESET          "\033[0m"
