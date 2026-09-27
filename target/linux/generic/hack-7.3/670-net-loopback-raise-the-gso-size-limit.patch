@@ -1,0 +1,12 @@
+--- a/drivers/net/loopback.c
++++ b/drivers/net/loopback.c
+@@ -192,6 +192,9 @@ static void gen_lo_setup(struct net_devi
+ 	dev->priv_destructor	= dev_destructor;
+ 
+ 	netif_set_tso_max_size(dev, GSO_MAX_SIZE);
++
++	WRITE_ONCE(dev->gso_max_size, GSO_MAX_SIZE);
++	WRITE_ONCE(dev->gso_ipv4_max_size, GSO_MAX_SIZE);
+ }
+ 
+ /* The loopback device is special. There is only one instance
