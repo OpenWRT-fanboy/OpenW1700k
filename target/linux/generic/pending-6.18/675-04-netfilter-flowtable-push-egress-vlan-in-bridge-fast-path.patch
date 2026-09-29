@@ -1,0 +1,77 @@
+From: Tao Gong <gongtao0607@gmail.com>
+Subject: [PATCH] netfilter: flowtable: push the egress VLAN in the bridge fast path
+
+The software fast path pops the ingress encapsulation (nf_flow_encap_pop())
+and transmits with FLOW_OFFLOAD_XMIT_DIRECT, but nothing puts the egress VLAN
+back. For a bridge flowtable, a flow that enters on a tagged port and leaves
+on a tagged port therefore leaves untagged and lands in the native VLAN.
+TCP connections stall before the hardware entry binds.
+
+The path walk already recorded the egress VLAN: it is the ingress encap of
+the other direction's tuple. Push it as an accelerated tag, unless the tag
+is handled by switch hardware on that port (in_vlan_ingress).
+
+Skip the push when the egress port is itself a VLAN device, i.e. when the
+transmit device differs from the hardware device (out.ifidx !=
+out.hw_ifidx). Such a device adds the tag itself, so pushing it here as
+well leaves the frame double tagged and dropped. TCP still connects,
+because the handshake takes the slow path, and then stalls once the flow
+is offloaded.
+
+Only a single 802.1Q/802.1ad tag is restored.
+
+Signed-off-by: Tao Gong <gongtao0607@gmail.com>
+---
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -367,6 +367,34 @@
+ 	return flow_offload_lookup(flow_table, &tuple);
+ }
+ 
++/* The bridge fast path pops the ingress VLAN; put the egress VLAN back.
++ * The other direction's ingress encap is this direction's egress encap.
++ */
++static void nf_flow_bridge_vlan_push(struct nf_flowtable *flow_table,
++				     struct flow_offload *flow,
++				     enum flow_offload_tuple_dir dir,
++				     struct sk_buff *skb)
++{
++	const struct flow_offload_tuple *other = &flow->tuplehash[!dir].tuple;
++	const struct flow_offload_tuple *this = &flow->tuplehash[dir].tuple;
++
++	if (flow_table->type->family != NFPROTO_BRIDGE || !other->encap_num)
++		return;
++
++	/* Tag handled by the switch hardware on this port */
++	if (other->in_vlan_ingress & BIT(0))
++		return;
++
++	/* Egress port is a VLAN device, which adds its tag itself */
++	if (this->out.ifidx != this->out.hw_ifidx)
++		return;
++
++	if (other->encap[0].proto == htons(ETH_P_8021Q) ||
++	    other->encap[0].proto == htons(ETH_P_8021AD))
++		__vlan_hwaccel_put_tag(skb, other->encap[0].proto,
++				       other->encap[0].id);
++}
++
+ static int nf_flow_offload_forward(struct nf_flowtable_ctx *ctx,
+ 				   struct nf_flowtable *flow_table,
+ 				   struct flow_offload_tuple_rhash *tuplehash,
+@@ -400,6 +428,7 @@
+ 	flow_offload_refresh(flow_table, flow, false);
+ 
+ 	nf_flow_encap_pop(skb, tuplehash);
++	nf_flow_bridge_vlan_push(flow_table, flow, dir, skb);
+ 	thoff -= ctx->offset;
+ 
+ 	iph = ip_hdr(skb);
+@@ -689,6 +718,7 @@
+ 	flow_offload_refresh(flow_table, flow, false);
+ 
+ 	nf_flow_encap_pop(skb, tuplehash);
++	nf_flow_bridge_vlan_push(flow_table, flow, dir, skb);
+ 
+ 	ip6h = ipv6_hdr(skb);
+ 	nf_flow_nat_ipv6(flow, skb, dir, ip6h);
