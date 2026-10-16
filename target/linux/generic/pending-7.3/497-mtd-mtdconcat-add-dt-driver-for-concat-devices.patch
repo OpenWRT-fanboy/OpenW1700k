@@ -31,49 +31,22 @@ probing, preventing unnecessary deferred probes.
 
 Signed-off-by: Bernhard Frauendienst <kernel@nospam.obeliks.de>
 ---
- drivers/mtd/Kconfig                 |   2 +
  drivers/mtd/Makefile                |   3 +
- drivers/mtd/composite/Kconfig       |  12 +++
  drivers/mtd/composite/Makefile      |   6 ++
  drivers/mtd/composite/virt_concat.c | 128 ++++++++++++++++++++++++++++
- 5 files changed, 151 insertions(+)
- create mode 100644 drivers/mtd/composite/Kconfig
+ 3 files changed, 137 insertions(+)
  create mode 100644 drivers/mtd/composite/Makefile
  create mode 100644 drivers/mtd/composite/virt_concat.c
 
---- a/drivers/mtd/Kconfig
-+++ b/drivers/mtd/Kconfig
-@@ -241,4 +241,6 @@ source "drivers/mtd/ubi/Kconfig"
- 
- source "drivers/mtd/hyperbus/Kconfig"
- 
-+source "drivers/mtd/composite/Kconfig"
-+
- endif # MTD
 --- a/drivers/mtd/Makefile
 +++ b/drivers/mtd/Makefile
-@@ -33,3 +33,6 @@ obj-y		+= chips/ lpddr/ maps/ devices/ n
+@@ -34,3 +34,6 @@ obj-y		+= chips/ lpddr/ maps/ devices/ n
  obj-$(CONFIG_MTD_SPI_NOR)	+= spi-nor/
  obj-$(CONFIG_MTD_UBI)		+= ubi/
  obj-$(CONFIG_MTD_HYPERBUS)	+= hyperbus/
 +
 +# Composite drivers must be loaded last
 +obj-y				+= composite/
---- /dev/null
-+++ b/drivers/mtd/composite/Kconfig
-@@ -0,0 +1,12 @@
-+menu "Composite MTD device drivers"
-+	depends on MTD!=n
-+
-+config MTD_VIRT_CONCAT
-+	tristate "Virtual concat MTD device"
-+	help
-+	  This driver allows creation of a virtual MTD concat device, which
-+	  concatenates multiple underlying MTD devices to a single device.
-+	  This is required by some SoC boards where multiple memory banks are
-+	  used as one device with partitions spanning across device boundaries.
-+
-+endmenu
 --- /dev/null
 +++ b/drivers/mtd/composite/Makefile
 @@ -0,0 +1,6 @@
@@ -97,8 +70,8 @@ Signed-off-by: Bernhard Frauendienst <kernel@nospam.obeliks.de>
 +#include <linux/platform_device.h>
 +#include <linux/module.h>
 +#include <linux/device.h>
-+#include <linux/mtd/concat.h>
 +#include <linux/mtd/mtd.h>
++#include <linux/mtd/concat.h>
 +#include <linux/mtd/partitions.h>
 +#include <linux/of.h>
 +#include <linux/mod_devicetable.h>

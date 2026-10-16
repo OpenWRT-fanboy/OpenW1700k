@@ -1,0 +1,16 @@
+Subject: clk: en7523: pass soc data to en751221 hw init
+
+The generalized hw_init callback takes the soc data pointer.
+Update en751221_clk_hw_init to match so the soc data assignment
+compiles.
+---
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -1340,6 +1340,7 @@ static void en751221_register_clocks(str
+ }
+ 
+ static int en751221_clk_hw_init(struct platform_device *pdev,
++				const struct en_clk_soc_data *soc_data,
+ 				struct clk_hw_onecell_data *clk_data)
+ {
+ 	struct regmap *map;
