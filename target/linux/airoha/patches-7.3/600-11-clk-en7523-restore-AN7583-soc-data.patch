@@ -1,0 +1,32 @@
+Subject: clk: en7523: restore AN7583 soc data and compatible
+
+The AN7583 soc data and of_device_id entry from the AN7583
+support change fail to apply and are silently skipped. Add them
+back so an7583_clk_hw_init is referenced.
+---
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -1485,9 +1485,23 @@ static const struct en_clk_soc_data en75
+ 	.hw_init = en751221_clk_hw_init,
+ };
+ 
++static const struct en_clk_soc_data an7583_data = {
++	.probe_child = true,
++	.base_clks = an7583_base_clks,
++	/* We increment num_clocks by 1 to account for additional PCIe clock */
++	.num_clocks = ARRAY_SIZE(an7583_base_clks) + 1,
++	.pcie_ops = {
++		.is_enabled = en7581_pci_is_enabled,
++		.enable = en7581_pci_enable,
++		.disable = en7581_pci_disable,
++	},
++	.hw_init = an7583_clk_hw_init,
++};
++
+ static const struct of_device_id of_match_clk_en7523[] = {
+ 	{ .compatible = "airoha,en7523-scu", .data = &en7523_data },
+ 	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
++	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
+ 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
+ 	{ /* sentinel */ }
+ };

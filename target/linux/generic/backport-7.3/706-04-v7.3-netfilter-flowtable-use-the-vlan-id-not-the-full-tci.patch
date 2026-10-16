@@ -37,7 +37,7 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
 
 --- a/net/netfilter/nf_flow_table_ip.c
 +++ b/net/netfilter/nf_flow_table_ip.c
-@@ -150,14 +150,14 @@ static void nf_flow_tuple_encap(struct s
+@@ -170,14 +170,14 @@ static void nf_flow_tuple_encap(struct n
  	int i = 0;
  
  	if (skb_vlan_tag_present(skb)) {
@@ -52,5 +52,5 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
 -		tuple->encap[i].id = ntohs(veth->h_vlan_TCI);
 +		tuple->encap[i].id = ntohs(veth->h_vlan_TCI) & VLAN_VID_MASK;
  		tuple->encap[i].proto = skb->protocol;
+ 		offset += VLAN_HLEN;
  		break;
- 	case htons(ETH_P_PPP_SES):
