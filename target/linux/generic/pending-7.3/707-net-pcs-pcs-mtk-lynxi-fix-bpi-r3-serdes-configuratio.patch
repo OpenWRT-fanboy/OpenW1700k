@@ -25,9 +25,9 @@ Signed-off-by: Frank Wunderlich <frank-w@public-files.de>
 
 --- a/drivers/net/pcs/pcs-mtk-lynxi.c
 +++ b/drivers/net/pcs/pcs-mtk-lynxi.c
-@@ -129,6 +129,9 @@ static int mtk_pcs_config_polarity(struc
- 	unsigned int val = 0;
- 	int ret;
+@@ -135,6 +135,9 @@ static int mtk_pcs_config_polarity(struc
+ 	if (!fwnode)
+ 		return 0;
  
 +	if (!fwnode)
 +		return 0;
