@@ -29,8 +29,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/drivers/pci/controller/pcie-mediatek-gen3.c
 +++ b/drivers/pci/controller/pcie-mediatek-gen3.c
-@@ -31,6 +31,11 @@
- 
+@@ -33,6 +33,11 @@
+ #include "pci-host-common.h"
  #include "../pci.h"
  
 +/* AN7581 SCU register */
@@ -41,7 +41,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  #define PCIE_BASE_CFG_REG		0x14
  #define PCIE_BASE_CFG_SPEED		GENMASK(15, 8)
  
-@@ -130,6 +135,7 @@
+@@ -138,6 +143,7 @@
  #define PCIE_ATR_TLP_TYPE_IO		PCIE_ATR_TLP_TYPE(2)
  
  #define MAX_NUM_PHY_RESETS		3
@@ -49,7 +49,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  
  #define PCIE_MTK_RESET_TIME_US		10
  
-@@ -202,9 +208,11 @@ struct mtk_msi_set {
+@@ -210,9 +216,11 @@ struct mtk_msi_set {
  struct mtk_gen3_pcie {
  	struct device *dev;
  	void __iomem *base;
@@ -61,9 +61,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	struct phy *phy;
  	struct clk_bulk_data *clks;
  	int num_clks;
-@@ -893,6 +901,14 @@ static int mtk_pcie_parse_port(struct mt
- 		return ret;
- 	}
+@@ -950,6 +958,14 @@ static int mtk_pcie_parse_port(struct mt
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to get PHY bulk reset\n");
  
 +	pcie->perstout_resets[0].id = "perstout";
 +	pcie->perstout_resets[1].id = "sec-perstout";
@@ -74,9 +74,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		return dev_err_probe(dev, ret, "failed to get PERSTOUT bulk reset\n");
 +
  	pcie->mac_reset = devm_reset_control_get_optional_exclusive(dev, "mac");
- 	if (IS_ERR(pcie->mac_reset)) {
- 		ret = PTR_ERR(pcie->mac_reset);
-@@ -926,18 +942,38 @@ static int mtk_pcie_parse_port(struct mt
+ 	if (IS_ERR(pcie->mac_reset))
+ 		return dev_err_probe(dev, PTR_ERR(pcie->mac_reset), "failed to get MAC reset\n");
+@@ -971,18 +987,38 @@ static int mtk_pcie_parse_port(struct mt
  			pcie->num_lanes = num_lanes;
  	}
  
@@ -117,7 +117,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  
  	/*
  	 * The controller may have been left out of reset by the bootloader
-@@ -975,6 +1011,19 @@ static int mtk_pcie_en7581_power_up(stru
+@@ -1020,6 +1056,19 @@ static int mtk_pcie_en7581_power_up(stru
  		return err;
  	}
  
@@ -137,7 +137,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	/*
  	 * Unlike the other MediaTek Gen3 controllers, the Airoha EN7581
  	 * requires PHY initialization and power-on before PHY reset deassert.
-@@ -1007,18 +1056,6 @@ static int mtk_pcie_en7581_power_up(stru
+@@ -1052,18 +1101,6 @@ static int mtk_pcie_en7581_power_up(stru
  	pm_runtime_enable(dev);
  	pm_runtime_get_sync(dev);
  
@@ -156,7 +156,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	err = clk_bulk_prepare_enable(pcie->num_clks, pcie->clks);
  	if (err) {
  		dev_err(dev, "failed to prepare clock\n");
-@@ -1026,14 +1063,47 @@ static int mtk_pcie_en7581_power_up(stru
+@@ -1071,14 +1108,47 @@ static int mtk_pcie_en7581_power_up(stru
  	}
  
  	/*
@@ -207,7 +207,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  err_clk_prepare_enable:
  	pm_runtime_put_sync(dev);
  	pm_runtime_disable(dev);
-@@ -1119,6 +1189,8 @@ static void mtk_pcie_power_down(struct m
+@@ -1164,6 +1234,8 @@ static void mtk_pcie_power_down(struct m
  
  	phy_power_off(pcie->phy);
  	phy_exit(pcie->phy);
