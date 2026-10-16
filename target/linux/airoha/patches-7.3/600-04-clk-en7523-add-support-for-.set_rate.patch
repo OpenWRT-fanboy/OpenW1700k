@@ -21,7 +21,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/drivers/clk/clk-en7523.c
 +++ b/drivers/clk/clk-en7523.c
-@@ -506,8 +506,149 @@ static unsigned long en75xx_recalc_rate(
+@@ -663,8 +663,149 @@ static unsigned long en75xx_recalc_rate(
  	return rate / en7523_get_div(desc, val);
  }
  
@@ -104,20 +104,20 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	return 0;
 +}
 +
-+static long en75xx_round_rate(struct clk_hw *hw, unsigned long rate,
-+			      unsigned long *parent_rate)
++static int en75xx_determine_rate(struct clk_hw *hw,
++				   struct clk_rate_request *req)
 +{
 +	struct en_clk *en_clk = container_of(hw, struct en_clk, hw);
 +	u32 div_val, base_val;
 +	int err;
 +
 +	/* Just check if the rate is possible */
-+	err = en75xx_get_vals_for_rate(en_clk->desc, rate,
++	err = en75xx_get_vals_for_rate(en_clk->desc, req->rate,
 +				       &base_val, &div_val);
 +	if (err)
 +		return err;
 +
-+	return rate;
++	return 0;
 +}
 +
 +static int en75xx_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -166,7 +166,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
  static const struct clk_ops en75xx_clk_ops = {
  	.recalc_rate = en75xx_recalc_rate,
-+	.round_rate = en75xx_round_rate,
++	.determine_rate = en75xx_determine_rate,
 +	.set_rate = en75xx_set_rate,
  };
  
