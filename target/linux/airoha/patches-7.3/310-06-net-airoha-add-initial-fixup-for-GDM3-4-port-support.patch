@@ -9,9 +9,8 @@ be enabled to correctly be identified.
 
 Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 ---
- drivers/net/ethernet/airoha/airoha_eth.c  | 12 ++++++++++--
- drivers/net/ethernet/airoha/airoha_regs.h |  1 +
- 2 files changed, 11 insertions(+), 2 deletions(-)
+ drivers/net/ethernet/airoha/airoha_eth.c  | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
 
 --- a/drivers/net/ethernet/airoha/airoha_eth.c
 +++ b/drivers/net/ethernet/airoha/airoha_eth.c
