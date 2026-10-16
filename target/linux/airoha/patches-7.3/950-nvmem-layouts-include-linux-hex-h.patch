@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenWrt <openwrt@nobody>
+Date: Sun, 20 Sep 2026 00:00:00 +0000
+Subject: [PATCH] nvmem: layouts: include linux/hex.h for mac_pton and
+ hex_to_bin
+
+mac_pton() and hex_to_bin() are declared in linux/hex.h in this
+kernel tree. Add the missing include to avoid implicit declaration
+errors with -Werror=implicit-function-declaration.
+
+Signed-off-by: OpenWrt <openwrt@nobody>
+---
+ drivers/nvmem/layouts.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+--- a/drivers/nvmem/layouts.c
++++ b/drivers/nvmem/layouts.c
+@@ -10,6 +10,7 @@
+ #include <linux/device.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/etherdevice.h>
++#include <linux/hex.h>
+ #include <linux/if_ether.h>
+ #include <linux/nvmem-consumer.h>
+ #include <linux/nvmem-provider.h>
