@@ -105,6 +105,13 @@
 			drive-open-drain = <1>;
 		};
 	};
+
+	uart2_pins: uart2-pins {
+		mux {
+			function = "uart";
+			groups = "uart2";
+		};
+	};
 };
 
 &snfi {
@@ -375,4 +382,10 @@
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&pcie2_rst_pins>;
+};
+
+&uart2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart2_pins>;
 };
