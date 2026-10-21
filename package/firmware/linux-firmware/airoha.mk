@@ -33,8 +33,8 @@ Package/airoha-en7581-mt7996-npu-firmware = $(call Package/firmware-default,Airo
 define Package/airoha-en7581-mt7996-npu-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/airoha
 	$(CP) \
-		$(PKG_BUILD_DIR)/airoha/en7581_MT7996_npu_data.bin \
-		$(PKG_BUILD_DIR)/airoha/en7581_MT7996_npu_rv32.bin \
+		./files/airoha/en7581_MT7996_npu_data.bin \
+		./files/airoha/en7581_MT7996_npu_rv32.bin \
 		$(1)/lib/firmware/airoha
 endef
 
