@@ -1,0 +1,28 @@
+--- /dev/null
++++ b/feeds/packages/admin/netatop/patches/200-kernel-7.3-string-api.patch
+@@ -0,0 +1,25 @@
++Subject: [PATCH] replace removed kernel strncpy calls
++
++Use the kernel string API available with Linux 7.3 while preserving all
++COMLEN bytes of the exported command field, including zero padding.
++
++--- a/module/netatop.c
+++++ b/module/netatop.c
++@@ -89,6 +89,7 @@
++ #include <linux/sched.h>
++ #include <linux/skbuff.h>
++ #include <linux/types.h>
+++#include <linux/string.h>
++ #include <linux/file.h>
++ #include <linux/kthread.h>
++ #include <linux/seq_file.h>
++@@ -994,7 +995,8 @@
++ 		tip->btime++;
++ #endif
++ 
++-	strncpy(tip->command, current->comm, COMLEN);
+++	memcpy_and_pad(tip->command, COMLEN, current->comm,
+++		       strnlen(current->comm, COMLEN), 0);
++ 
++ 	return tip;
++ }

@@ -1,0 +1,141 @@
+--- /dev/null
++++ b/feeds/packages/net/xtables-addons/patches/700-kernel-7.3-string-api.patch
+@@ -0,0 +1,71 @@
++Subject: [PATCH] replace removed kernel strncpy calls
++
++Use the kernel string API available with Linux 7.3 while preserving string
++termination, fixed-field padding and explicitly sized Lua script copies.
++Validate userspace copy lengths before accessing the fixed-size fields.
++Userspace calls continue to use libc unchanged.
++
++--- a/extensions/pknock/xt_pknock.c
+++++ b/extensions/pknock/xt_pknock.c
++@@ -998,6 +998,9 @@
++ {
++ 	struct xt_pknock_mtinfo *info = par->matchinfo;
++ 
+++	if (info->rule_name_len >= sizeof(info->rule_name))
+++		RETURN_ERR("Rule name is too long.\n");
+++
++ 	/* Singleton. */
++ 	if (rule_hashtable == NULL) {
++ 		rule_hashtable = alloc_hashtable(rule_hashsize);
++--- a/extensions/LUA/xt_LUA_target.c
+++++ b/extensions/LUA/xt_LUA_target.c
++@@ -18,6 +18,7 @@
++ 
++ #include <linux/kernel.h>
++ #include <linux/slab.h>
+++#include <linux/string.h>
++ #include <linux/module.h>
++ #include <linux/uaccess.h>
++ #include <net/ip.h>
++@@ -150,7 +151,8 @@
++ 	lua_setfield(env->L, -2, "STATE_ID");
++ 	lua_pop(env->L, 1); /* pop _G */
++ 
++-	strncpy(buf, script_buf, script_size);
+++	memcpy_and_pad(buf, script_size, script_buf,
+++		       strnlen(script_buf, script_size), 0);
++ 	ret = luaL_loadbuffer(env->L, buf, script_size, "PacketScript, loadbuffer") ||
++ 	      lua_pcall(env->L, 0, 1, 0);
++ 
++@@ -213,6 +215,9 @@
++ {
++ 	const struct xt_lua_tginfo *info = par->targinfo;
++ 
+++	if (info->script_size > sizeof(info->buf))
+++		return -EINVAL;
+++
++ 	if (load_script_into_state(info->state_id, info->script_size, (char *)info->buf)) {
++ 		lua_state_refs[info->state_id]++;
++ 		return 0;
++--- a/extensions/LUA/lua/lobject.c
+++++ b/extensions/LUA/lua/lobject.c
++@@ -180,7 +180,7 @@
++ 
++ void luaO_chunkid (char *out, const char *source, size_t bufflen) {
++   if (*source == '=') {
++-    strncpy(out, source+1, bufflen);  /* remove first char */
+++    strscpy_pad(out, source+1, bufflen);  /* remove first char */
++     out[bufflen-1] = '\0';  /* ensures null termination */
++   }
++   else {  /* out = "source", or "...source" */
++--- a/extensions/LUA/lua/lstrlib.c
+++++ b/extensions/LUA/lua/lstrlib.c
++@@ -754,7 +754,7 @@
++   if (isdigit(uchar(*p)))
++     luaL_error(L, "invalid format (width or precision too long)");
++   *(form++) = '%';
++-  strncpy(form, strfrmt, p - strfrmt + 1);
+++  memcpy(form, strfrmt, p - strfrmt + 1);
++   form += p - strfrmt + 1;
++   *form = '\0';
++   return p;
+--- /dev/null
++++ b/feeds/packages/net/xtables-addons/patches/701-rtsp-kernel-helper-api.patch
+@@ -0,0 +1,64 @@
++Subject: [PATCH] rtsp: adapt to connection tracking helper API changes
++
++Linux 7.2 stores expectation policies in the helper and allocates a helper
++instance at registration. Retain the returned pointer for unregistering,
++including cleanup after a partial registration failure. Linux 7.3 replaces
++the helper tuple with protocol fields. Keep the older kernel interfaces.
++
++--- a/extensions/rtsp/nf_conntrack_rtsp.c
+++++ b/extensions/rtsp/nf_conntrack_rtsp.c
++@@ -676,6 +676,9 @@
++ }
++ 
++ static struct nf_conntrack_helper rtsp_helpers[MAX_PORTS];
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7,2,0)
+++static struct nf_conntrack_helper *rtsp_helper_ptrs[MAX_PORTS];
+++#endif
++ static char rtsp_names[MAX_PORTS][10];
++ 
++ /* This function is intentionally _NOT_ defined as __exit */
++@@ -685,7 +688,12 @@
++ 	int i;
++ 	for (i = 0; i < num_ports; i++) {
++ 		pr_debug("unregistering port %d\n", ports[i]);
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7,2,0)
+++		if (rtsp_helper_ptrs[i])
+++			nf_conntrack_helper_unregister(rtsp_helper_ptrs[i]);
+++#else
++ 		nf_conntrack_helper_unregister(&rtsp_helpers[i]);
+++#endif
++ 	}
++ 	kfree(rtsp_buffer);
++ }
++@@ -720,10 +728,19 @@
++ 	for (i = 0; (i < MAX_PORTS) && ports[i]; i++) {
++ 		hlpr = &rtsp_helpers[i];
++ 		memset(hlpr, 0, sizeof(struct nf_conntrack_helper));
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7,3,0)
+++		hlpr->nfproto = NFPROTO_IPV4;
+++		hlpr->l4proto = IPPROTO_TCP;
+++#else
++ 		hlpr->tuple.src.l3num = AF_INET;
++ 		hlpr->tuple.src.u.tcp.port = htons(ports[i]);
++ 		hlpr->tuple.dst.protonum = IPPROTO_TCP;
+++#endif
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7,2,0)
+++		hlpr->expect_policy[0] = rtsp_exp_policy;
+++#else
++ 		hlpr->expect_policy = &rtsp_exp_policy;
+++#endif
++ 		hlpr->me = THIS_MODULE;
++ 		hlpr->help = help;
++ 
++@@ -743,7 +760,11 @@
++ #endif
++ 		pr_debug("port #%d: %d\n", i, ports[i]);
++ 
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7,2,0)
+++		ret = nf_conntrack_helper_register(hlpr, &rtsp_helper_ptrs[i]);
+++#else
++ 		ret = nf_conntrack_helper_register(hlpr);
+++#endif
++ 
++ 		if (ret) {
++ 			printk("nf_conntrack_rtsp: ERROR registering port %d\n", ports[i]);
