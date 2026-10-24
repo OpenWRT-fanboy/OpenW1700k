@@ -1,0 +1,36 @@
+--- /dev/null
++++ b/feeds/packages/net/jool/patches/101-fix-unexported-snmp-fold-field.patch
+@@ -0,0 +1,33 @@
++Subject: [PATCH] jool: fold per-CPU stats without an unexported symbol
++
++Linux commit b056e73267244a126545c52f6c36c62893bb643c stopped exporting
++snmp_fold_field. Keep its possible-CPU iteration and unsigned-long sum
++semantics in jstat_query, using the existing inline snmp_get_cpu_field.
++
++Source: https://github.com/torvalds/linux/commit/b056e73267244a126545c52f6c36c62893bb643c
++
++--- a/src/mod/common/stats.c
+++++ b/src/mod/common/stats.c
++@@ -73,14 +73,19 @@
++ __u64 *jstat_query(struct jool_stats *stats)
++ {
++ 	__u64 *result;
++-	int i;
+++	unsigned long sum;
+++	int i, cpu;
++ 
++ 	result = kcalloc(JSTAT_COUNT, sizeof(__u64), GFP_KERNEL);
++ 	if (!result)
++ 		return NULL;
++ 
++-	for (i = 0; i < JSTAT_COUNT; i++)
++-		result[i] = snmp_fold_field(stats->mib, i);
+++	for (i = 0; i < JSTAT_COUNT; i++) {
+++		sum = 0;
+++		for_each_possible_cpu(cpu)
+++			sum += snmp_get_cpu_field(stats->mib, cpu, i);
+++		result[i] = sum;
+++	}
++ 
++ 	return result;
++ }

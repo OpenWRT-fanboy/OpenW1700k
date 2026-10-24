@@ -1,0 +1,27 @@
+--- /dev/null
++++ b/feeds/packages/libs/libpfring/patches/902-fix-bind-callback-linux-6.19.patch
+@@ -0,0 +1,24 @@
++From: ntop PF_RING upstream
++Subject: [PATCH] pf_ring: fix bind callback on Linux 6.19 and newer
++
++Backport upstream commit 6ec5e19a36047e0a7a6f02b8f9badbb8f74ffd8d.
++Linux commit 0e50474fa514822e9d990874e554bf8043a201d7 changed the
++proto_ops bind callback to sockaddr_unsized. Retain the old prototype
++for earlier kernels.
++
++Upstream: https://github.com/ntop/PF_RING/commit/6ec5e19a36047e0a7a6f02b8f9badbb8f74ffd8d
++
++--- a/kernel/pf_ring.c
+++++ b/kernel/pf_ring.c
++@@ -5861,7 +5861,11 @@
++ /* ************************************* */
++ 
++ /* Bind to a device */
+++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,19,0)
+++static int ring_bind(struct socket *sock, struct sockaddr_unsized *sa, int addr_len)
+++#else
++ static int ring_bind(struct socket *sock, struct sockaddr *sa, int addr_len)
+++#endif
++ {
++   struct sock *sk = sock->sk;
++   struct net *net = sock_net(sk);

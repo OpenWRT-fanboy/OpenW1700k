@@ -1,0 +1,21 @@
+--- /dev/null
++++ b/feeds/telephony/net/rtpengine/patches/105-kernel-73-use-ccflags-y.patch
+@@ -0,0 +1,18 @@
++Subject: [PATCH] rtpengine: use ccflags-y instead of EXTRA_CFLAGS
++
++Linux 7.3 kbuild ignores EXTRA_CFLAGS for external modules. Switch to
++ccflags-y to keep -D__RE_EXTERNAL and -DRTPENGINE_VERSION.
++
++--- a/kernel-module/Makefile
+++++ b/kernel-module/Makefile
++@@ -22,9 +22,9 @@
++     RTPENGINE_VERSION+=undefined
++   endif
++ endif
++-EXTRA_CFLAGS+=	-DRTPENGINE_VERSION="\"$(RTPENGINE_VERSION)\""
+++ccflags-y +=	-DRTPENGINE_VERSION="\"$(RTPENGINE_VERSION)\""
++
++-EXTRA_CFLAGS += -D__RE_EXTERNAL
+++ccflags-y += -D__RE_EXTERNAL
++
++ obj-m        += xt_RTPENGINE.o
