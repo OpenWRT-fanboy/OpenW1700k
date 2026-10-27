@@ -97,8 +97,8 @@ Signed-off-by: Bernhard Frauendienst <kernel@nospam.obeliks.de>
 +#include <linux/platform_device.h>
 +#include <linux/module.h>
 +#include <linux/device.h>
-+#include <linux/mtd/concat.h>
 +#include <linux/mtd/mtd.h>
++#include <linux/mtd/concat.h>
 +#include <linux/mtd/partitions.h>
 +#include <linux/of.h>
 +#include <linux/mod_devicetable.h>

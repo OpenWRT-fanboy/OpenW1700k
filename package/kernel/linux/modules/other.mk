@@ -62,7 +62,9 @@ define KernelPackage/eeprom-at24
   TITLE:=EEPROM AT24 support
   KCONFIG:=CONFIG_EEPROM_AT24
   DEPENDS:=+kmod-i2c-core +kmod-regmap-i2c
-  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at24.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/misc/eeprom/at24.ko@lt7.3 \
+	$(LINUX_DIR)/drivers/nvmem/at24.ko@ge7.3
   AUTOLOAD:=$(call AutoProbe,at24)
 endef
 
@@ -77,7 +79,9 @@ define KernelPackage/eeprom-at25
   SUBMENU:=$(OTHER_MENU)
   TITLE:=EEPROM AT25 support
   KCONFIG:=CONFIG_EEPROM_AT25
-  FILES:=$(LINUX_DIR)/drivers/misc/eeprom/at25.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/misc/eeprom/at25.ko@lt7.3 \
+	$(LINUX_DIR)/drivers/nvmem/at25.ko@ge7.3
   AUTOLOAD:=$(call AutoProbe,at25)
 endef
 
