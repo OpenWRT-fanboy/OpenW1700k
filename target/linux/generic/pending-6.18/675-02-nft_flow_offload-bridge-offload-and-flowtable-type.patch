@@ -114,15 +114,15 @@
  			if (is_zero_ether_addr(info->h_source))
  				memcpy(info->h_source, path->dev->dev_addr, ETH_ALEN);
  
-@@ -156,15 +157,21 @@
+@@ -156,15 +157,20 @
  				info->num_encaps++;
  				break;
  			case DEV_PATH_BR_VLAN_UNTAG:
--				if (WARN_ON_ONCE(info->num_encaps-- == 0))
+-				if (info->num_encaps == 0)
 +				if (WARN_ON_ONCE(info->num_encaps == 0))
  					return -1;
  
-+				info->num_encaps--;
+				info->num_encaps--;
  				break;
  			case DEV_PATH_BR_VLAN_KEEP:
  				break;
