@@ -17,7 +17,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -15809,7 +15809,9 @@ M:	Daniel Golle <daniel@makrotopia.org>
+@@ -17018,7 +17018,9 @@ M:	Daniel Golle <daniel@makrotopia.org>
  L:	netdev@vger.kernel.org
  S:	Maintained
  F:	drivers/net/pcs/pcs-mtk-lynxi.c
@@ -29,7 +29,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  M:	Daniel Golle <daniel@makrotopia.org>
 --- a/drivers/net/pcs/Kconfig
 +++ b/drivers/net/pcs/Kconfig
-@@ -32,6 +32,19 @@ config PCS_MTK_LYNXI
+@@ -55,6 +55,19 @@ config PCS_MTK_LYNXI
  	  This module provides helpers to phylink for managing the LynxI PCS
  	  which is part of MediaTek's SoC and Ethernet switch ICs.
  
@@ -51,8 +51,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	depends on OF
 --- a/drivers/net/pcs/Makefile
 +++ b/drivers/net/pcs/Makefile
-@@ -8,4 +8,5 @@ pcs_xpcs-$(CONFIG_PCS_XPCS)	:= pcs-xpcs.
- obj-$(CONFIG_PCS_XPCS)		+= pcs_xpcs.o
+@@ -9,4 +9,5 @@ obj-$(CONFIG_PCS_XPCS_PLATFORM) += pcs-x
+ obj-$(CONFIG_PCS_XPCS_ROCKCHIP) += pcs-xpcs-rk.o
  obj-$(CONFIG_PCS_LYNX)		+= pcs-lynx.o
  obj-$(CONFIG_PCS_MTK_LYNXI)	+= pcs-mtk-lynxi.o
 +obj-$(CONFIG_PCS_MTK_USXGMII)	+= pcs-mtk-usxgmii.o

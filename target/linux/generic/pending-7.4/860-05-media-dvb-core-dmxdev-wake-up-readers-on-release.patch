@@ -59,7 +59,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-6-pepe.schlehofer@gmail.c
  		if (src->error) {
  			ret = src->error;
  			dvb_ringbuffer_flush(src);
-@@ -273,7 +280,7 @@ static ssize_t dvb_dvr_read(struct file
+@@ -274,7 +281,7 @@ static ssize_t dvb_dvr_read(struct file
  	if (dmxdev->exit)
  		return -ENODEV;
  
@@ -68,7 +68,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-6-pepe.schlehofer@gmail.c
  				      file->f_flags & O_NONBLOCK,
  				      buf, count, ppos);
  }
-@@ -978,7 +985,7 @@ static ssize_t dvb_dmxdev_read_sec(struc
+@@ -998,7 +1005,7 @@ static ssize_t dvb_dmxdev_read_sec(struc
  		hcount = 3 + dfil->todo;
  		if (hcount > count)
  			hcount = count;
@@ -77,7 +77,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-6-pepe.schlehofer@gmail.c
  						file->f_flags & O_NONBLOCK,
  						buf, hcount, ppos);
  		if (result < 0) {
-@@ -999,7 +1006,7 @@ static ssize_t dvb_dmxdev_read_sec(struc
+@@ -1019,7 +1026,7 @@ static ssize_t dvb_dmxdev_read_sec(struc
  	}
  	if (count > dfil->todo)
  		count = dfil->todo;
@@ -86,7 +86,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-6-pepe.schlehofer@gmail.c
  					file->f_flags & O_NONBLOCK,
  					buf, count, ppos);
  	if (result < 0)
-@@ -1015,13 +1022,17 @@ dvb_demux_read(struct file *file, char _
+@@ -1035,13 +1042,17 @@ dvb_demux_read(struct file *file, char _
  	struct dmxdev_filter *dmxdevfilter = file->private_data;
  	int ret;
  
@@ -105,7 +105,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-6-pepe.schlehofer@gmail.c
  					     file->f_flags & O_NONBLOCK,
  					     buf, count, ppos);
  
-@@ -1456,8 +1467,21 @@ EXPORT_SYMBOL(dvb_dmxdev_init);
+@@ -1457,8 +1468,21 @@ EXPORT_SYMBOL(dvb_dmxdev_init);
  
  void dvb_dmxdev_release(struct dmxdev *dmxdev)
  {

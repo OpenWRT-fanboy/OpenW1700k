@@ -18,7 +18,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/rust/kernel/opp.rs
 +++ b/rust/kernel/opp.rs
-@@ -511,6 +511,7 @@ impl<T: ConfigOps + Default> Config<T> {
+@@ -515,6 +515,7 @@ impl<T: ConfigOps + Default> Config<T> {
      extern "C" fn config_clks(
          dev: *mut bindings::device,
          opp_table: *mut bindings::opp_table,

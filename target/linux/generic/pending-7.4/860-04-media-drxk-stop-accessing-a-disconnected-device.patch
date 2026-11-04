@@ -64,7 +64,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-5-pepe.schlehofer@gmail.c
  	old_delsys = state->props.delivery_system;
  	state->props = *p;
  
-@@ -6488,7 +6509,9 @@ static int drxk_get_stats(struct dvb_fro
+@@ -6487,7 +6508,9 @@ static int drxk_get_stats(struct dvb_fro
  
  	/* get status */
  	state->fe_status = 0;
