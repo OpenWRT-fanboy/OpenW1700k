@@ -112,7 +112,7 @@ Signed-off-by: Brandon Mahdavi <brandon.mahdavi@mahcom.com>
  static int qca8k_vlan_access(struct qca8k_priv *priv,
  			     enum qca8k_vlan_cmd cmd, u16 vid)
  {
-@@ -829,6 +859,29 @@ int qca8k_port_fdb_add(struct dsa_switch
+@@ -820,6 +850,29 @@ int qca8k_port_fdb_add(struct dsa_switch
  	struct qca8k_priv *priv = ds->priv;
  	u16 port_mask = BIT(port);
  
@@ -142,7 +142,7 @@ Signed-off-by: Brandon Mahdavi <brandon.mahdavi@mahcom.com>
  	return qca8k_port_fdb_insert(priv, addr, port_mask, vid);
  }
  
-@@ -839,6 +892,9 @@ int qca8k_port_fdb_del(struct dsa_switch
+@@ -830,6 +883,9 @@ int qca8k_port_fdb_del(struct dsa_switch
  	struct qca8k_priv *priv = ds->priv;
  	u16 port_mask = BIT(port);
  

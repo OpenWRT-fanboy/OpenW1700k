@@ -28,12 +28,6 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
 Link: https://lore.kernel.org/netfilter-devel/20261014210256.1573072-1-pablo@netfilter.org/
 Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
 Link: https://lore.kernel.org/netfilter-devel/20261017235849.1066624-2-julius@bairaktaris.de/
-[adapted to 6.18: the tuple, route and forward info carry no
-needs_gso_segment or tun_num bits, the gc step has no dst check to sit
-next to, fdb->dst is a plain pointer, out.ifidx is the topmost vlan or
-pppoe device of the path there so the walk to the bridge port starts
-from out.hw_ifidx, the real device, and if_vlan.h is included ahead of
-netdevice.h so that hack-6.18/650 keeps applying]
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
  include/linux/netfilter.h             |  7 +++++
@@ -66,21 +60,23 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  struct sk_buff;
 --- a/include/net/netfilter/nf_flow_table.h
 +++ b/include/net/netfilter/nf_flow_table.h
-@@ -136,6 +136,9 @@ struct flow_offload_tuple {
- 	u8				dir:2,
+@@ -153,6 +153,9 @@ struct flow_offload_tuple {
  					xmit_type:3,
  					encap_num:2,
+ 					needs_gso_segment:1,
 +					bridge_path:1,
 +					bridge_vlan:1,
 +					port_vlans:2,
+ 					tun_num:2,
  					in_vlan_ingress:2;
  	u16				mtu;
- 	union {
-@@ -216,6 +219,9 @@ struct nf_flow_route {
+@@ -236,7 +239,10 @@ struct nf_flow_route {
  			u32			hw_ifindex;
  			u8			h_source[ETH_ALEN];
  			u8			h_dest[ETH_ALEN];
-+			u8			bridge_path:1,
+-			u8			needs_gso_segment:1;
++			u8			needs_gso_segment:1,
++						bridge_path:1,
 +						bridge_vlan:1,
 +						port_vlans:2;
  		} out;
@@ -99,15 +95,15 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  obj-$(CONFIG_BRIDGE_NETFILTER) += br_netfilter.o
 --- a/net/bridge/br.c
 +++ b/net/bridge/br.c
-@@ -463,6 +463,7 @@ static int __init br_init(void)
+@@ -458,6 +458,7 @@ static int __init br_init(void)
  		goto err_out6;
  
  	brioctl_set(br_ioctl_stub);
 +	br_nf_utils_init();
  
- #if IS_ENABLED(CONFIG_ATM_LANE)
- 	br_fdb_test_addr_hook = br_fdb_test_addr;
-@@ -495,6 +496,7 @@ err_out:
+ #if IS_MODULE(CONFIG_BRIDGE_NETFILTER)
+ 	pr_info("bridge: filtering via arp/ip/ip6tables is no longer available "
+@@ -486,6 +487,7 @@ err_out:
  
  static void __exit br_deinit(void)
  {
@@ -140,7 +136,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	/* Offloaded packets do not refresh the entry, it can age out. */
 +	f = br_fdb_find_rcu(p->br, addr, vid);
 +
-+	return !f || READ_ONCE(f->dst) == p;
++	return !f || br_fdb_dst_port(f) == p;
 +}
 +
 +static const struct nf_br_utils nf_br_utils = {
@@ -158,7 +154,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +}
 --- a/net/bridge/br_private.h
 +++ b/net/bridge/br_private.h
-@@ -1995,6 +1995,19 @@ struct nf_br_ops {
+@@ -2165,6 +2165,19 @@ struct nf_br_ops {
  };
  extern const struct nf_br_ops __rcu *nf_br_ops;
  
@@ -180,7 +176,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  int br_nf_core_init(void);
 --- a/net/netfilter/core.c
 +++ b/net/netfilter/core.c
-@@ -802,6 +802,9 @@ static struct pernet_operations netfilte
+@@ -814,6 +814,9 @@ static struct pernet_operations netfilte
  	.exit = netfilter_net_exit,
  };
  
@@ -192,25 +188,25 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	int ret;
 --- a/net/netfilter/nf_flow_table_core.c
 +++ b/net/netfilter/nf_flow_table_core.c
-@@ -4,6 +4,7 @@
- #include <linux/module.h>
+@@ -5,6 +5,7 @@
  #include <linux/netfilter.h>
  #include <linux/rhashtable.h>
-+#include <linux/if_vlan.h>
  #include <linux/netdevice.h>
++#include <linux/if_vlan.h>
  #include <net/ip.h>
  #include <net/ip6_route.h>
-@@ -127,6 +128,9 @@ static int flow_offload_fill_route(struc
+ #include <net/netfilter/nf_tables.h>
+@@ -139,6 +140,9 @@ static int flow_offload_fill_route(struc
  		memcpy(flow_tuple->out.h_source, route->tuple[dir].out.h_source,
  		       ETH_ALEN);
  		flow_tuple->out.ifidx = route->tuple[dir].out.ifindex;
 +		flow_tuple->bridge_path = route->tuple[dir].out.bridge_path;
 +		flow_tuple->bridge_vlan = route->tuple[dir].out.bridge_vlan;
 +		flow_tuple->port_vlans = route->tuple[dir].out.port_vlans;
- 		flow_tuple->out.hw_ifidx = route->tuple[dir].out.hw_ifindex;
- 		dst_release(dst);
  		break;
-@@ -565,6 +569,40 @@ static void nf_flow_table_extend_ct_time
+ 	case FLOW_OFFLOAD_XMIT_XFRM:
+ 	case FLOW_OFFLOAD_XMIT_NEIGH:
+@@ -572,6 +576,43 @@ static void nf_flow_table_extend_ct_time
  	nf_ct_put(ct);
  }
  
@@ -226,6 +222,9 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	u16 vid = 0;
 +	int i;
 +
++	if (!nf_flow_dst_check(tuple))
++		return false;
++
 +	if (!tuple->bridge_path)
 +		return true;
 +
@@ -234,7 +233,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	if (!br_utils)
 +		goto out;
 +
-+	dev = dev_get_by_index_rcu(net, tuple->out.hw_ifidx);
++	dev = dev_get_by_index_rcu(net, tuple->out.ifidx);
 +	for (i = 0; dev && i < tuple->port_vlans; i++)
 +		dev = __vlan_find_dev_deep_rcu(dev, other->encap[i].proto,
 +					       other->encap[i].id);
@@ -251,10 +250,12 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  static void nf_flow_offload_gc_step(struct nf_flowtable *flow_table,
  				    struct flow_offload *flow, void *data)
  {
-@@ -577,6 +615,8 @@ static void nf_flow_offload_gc_step(stru
+@@ -584,8 +625,8 @@ static void nf_flow_offload_gc_step(stru
  
  	if (nf_flow_has_expired(flow) ||
  	    nf_ct_is_dying(flow->ct) ||
+-	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple) ||
+-	    !nf_flow_dst_check(&flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple) ||
 +	    !nf_flow_dst_valid(flow_table, flow, FLOW_OFFLOAD_DIR_ORIGINAL) ||
 +	    !nf_flow_dst_valid(flow_table, flow, FLOW_OFFLOAD_DIR_REPLY) ||
  	    nf_flow_custom_gc(flow_table, flow)) {
@@ -262,18 +263,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		teardown = true;
 --- a/net/netfilter/nf_flow_table_path.c
 +++ b/net/netfilter/nf_flow_table_path.c
-@@ -92,6 +92,9 @@ struct nft_forward_info {
+@@ -100,7 +100,10 @@ struct nft_forward_info {
  	u8 ingress_vlans;
  	u8 h_source[ETH_ALEN];
  	u8 h_dest[ETH_ALEN];
-+	u8 bridge_path:1,
+-	bool needs_gso_segment;
++	u8 needs_gso_segment:1,
++	   bridge_path:1,
 +	   bridge_vlan:1,
 +	   port_vlans:2;
  	enum flow_offload_xmit_type xmit_type;
  };
  
-@@ -100,7 +103,7 @@ static int nft_dev_path_info(const struc
- 			     unsigned char *ha, struct nf_flowtable *flowtable)
+@@ -113,7 +116,7 @@ static int nft_dev_path_info(struct net_
+ 			     struct nft_flowtable *ft)
  {
  	const struct net_device_path *path;
 -	int i;
@@ -281,21 +284,20 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  	memcpy(info->h_dest, ha, ETH_ALEN);
  
-@@ -133,6 +136,8 @@ static int nft_dev_path_info(const struc
- 			info->encap[info->num_encaps].id = path->encap.id;
- 			info->encap[info->num_encaps].proto = path->encap.proto;
- 			info->num_encaps++;
-+			if (info->bridge_path)
-+				info->port_vlans++;
- 			if (path->type == DEV_PATH_PPPOE)
+@@ -155,6 +158,8 @@ static int nft_dev_path_info(struct net_
+ 				info->encap[info->num_encaps].proto =
+ 					path->encap.proto;
+ 				info->num_encaps++;
++				if (info->bridge_path)
++					info->port_vlans++;
+ 			}
+ 			if (path->type == DEV_PATH_PPPOE) {
  				memcpy(info->h_dest, path->encap.h_dest, ETH_ALEN);
- 			break;
-@@ -164,6 +169,14 @@ static int nft_dev_path_info(const struc
+@@ -190,6 +195,13 @@ static int nft_dev_path_info(struct net_
  			case DEV_PATH_BR_VLAN_KEEP:
  				break;
  			}
 +			info->bridge_path = 1;
-+			info->port_vlans = 0;
 +			n = info->num_encaps;
 +			info->bridge_vlan = path->bridge.vlan_id && n &&
 +					    info->encap[n - 1].id ==
@@ -304,14 +306,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +					    path->bridge.vlan_proto;
  			info->xmit_type = FLOW_OFFLOAD_XMIT_DIRECT;
  			break;
- 		default:
-@@ -231,6 +244,9 @@ static int nft_dev_forward_path(struct n
+ 		case DEV_PATH_MTK_WDMA:
+@@ -306,6 +318,9 @@ static int nft_dev_forward_path(const st
  	if (info.xmit_type == FLOW_OFFLOAD_XMIT_DIRECT) {
  		memcpy(route->tuple[dir].out.h_source, info.h_source, ETH_ALEN);
  		memcpy(route->tuple[dir].out.h_dest, info.h_dest, ETH_ALEN);
 +		route->tuple[dir].out.bridge_path = info.bridge_path;
 +		route->tuple[dir].out.bridge_vlan = info.bridge_vlan;
 +		route->tuple[dir].out.port_vlans = info.port_vlans;
- 		route->tuple[dir].out.hw_ifindex = info.hw_outdev->ifindex;
  		route->tuple[dir].xmit_type = info.xmit_type;
  	}
+ 	route->tuple[dir].out.needs_gso_segment = info.needs_gso_segment;
