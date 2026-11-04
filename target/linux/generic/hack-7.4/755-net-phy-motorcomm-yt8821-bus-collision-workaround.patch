@@ -49,7 +49,7 @@ Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
 
 --- a/drivers/net/phy/motorcomm.c
 +++ b/drivers/net/phy/motorcomm.c
-@@ -254,6 +254,9 @@
+@@ -262,6 +262,9 @@
  #define YT8522_RXDV_SEL				BIT(4)
  #define YT8522_RMII_EN				BIT(1)
  
@@ -59,7 +59,7 @@ Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
  #define YTPHY_MISC_CONFIG_REG			0xA006
  #define YTPHY_MCR_FIBER_SPEED_MASK		BIT(0)
  #define YTPHY_MCR_FIBER_1000BX			(0x1 << 0)
-@@ -3917,6 +3920,23 @@ static int yt8821_config_init(struct phy
+@@ -4085,6 +4088,23 @@ static int yt8821_config_init(struct phy
  	int ret;
  	u16 set;
  

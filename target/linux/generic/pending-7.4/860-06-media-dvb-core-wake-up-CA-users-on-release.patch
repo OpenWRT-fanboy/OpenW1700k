@@ -78,7 +78,7 @@ Link: https://lore.kernel.org/all/20261004100741.71711-7-pepe.schlehofer@gmail.c
  	if (dvb_ca_en50221_io_read_condition(ca, &result, &slot) == 1)
  		mask |= EPOLLIN;
  
-@@ -1966,6 +1981,13 @@ void dvb_ca_en50221_release(struct dvb_c
+@@ -1965,6 +1980,13 @@ void dvb_ca_en50221_release(struct dvb_c
  	ca->exit = 1;
  	mutex_unlock(&ca->remove_mutex);
  
