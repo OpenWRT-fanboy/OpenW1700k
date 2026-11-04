@@ -26,8 +26,8 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
 
 --- a/drivers/pinctrl/airoha/airoha-common.h
 +++ b/drivers/pinctrl/airoha/airoha-common.h
-@@ -129,6 +129,11 @@ struct airoha_pinctrl {
- 	struct airoha_gpiochip_regs *gpio_regs;
+@@ -130,6 +130,11 @@ struct airoha_pinctrl {
+ 	unsigned int num_irq_pins;
  };
  
 +struct airoha_pinctrl_hwinit_regs {
@@ -38,18 +38,18 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
  struct airoha_pinctrl_match_data {
  	const char *chip_scu_compatible;
  	const char *pinctrl_name;
-@@ -140,6 +145,8 @@ struct airoha_pinctrl_match_data {
+@@ -141,6 +146,8 @@ struct airoha_pinctrl_match_data {
  	const struct airoha_pinctrl_func *funcs;
  	const unsigned int num_funcs;
  	const struct airoha_pinctrl_confs_info confs_info[AIROHA_PINCTRL_CONFS_MAX];
 +	const struct airoha_pinctrl_hwinit_regs *hwinit_regs;
 +	const unsigned int num_hwinit_regs;
+ 	/* number of GPIOs wired to the interrupt controller */
+ 	const unsigned int num_irq_pins;
  };
- 
- int airoha_pinctrl_probe(struct platform_device *pdev);
 --- a/drivers/pinctrl/airoha/pinctrl-airoha.c
 +++ b/drivers/pinctrl/airoha/pinctrl-airoha.c
-@@ -803,6 +803,19 @@ int airoha_pinctrl_probe(struct platform
+@@ -823,6 +823,19 @@ int airoha_pinctrl_probe(struct platform
  
  	pinctrl->chip_scu = map;
  
@@ -92,9 +92,9 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
  	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
 +	.hwinit_regs = hwinit_regs,
 +	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.num_irq_pins = AIROHA_NUM_PINS,
  	.confs_info = {
  		[AIROHA_PINCTRL_CONFS_PULLUP] = {
- 			.confs = pinctrl_pullup_conf,
 --- a/drivers/pinctrl/airoha/pinctrl-an7583.c
 +++ b/drivers/pinctrl/airoha/pinctrl-an7583.c
 @@ -39,6 +39,7 @@
@@ -136,9 +136,9 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
  	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
 +	.hwinit_regs = hwinit_regs,
 +	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.num_irq_pins = AIROHA_NUM_PINS,
  	.confs_info = {
  		[AIROHA_PINCTRL_CONFS_PULLUP] = {
- 			.confs = pinctrl_pullup_conf,
 --- a/drivers/pinctrl/airoha/pinctrl-en7523.c
 +++ b/drivers/pinctrl/airoha/pinctrl-en7523.c
 @@ -1103,6 +1103,14 @@ static const struct airoha_pinctrl_conf
@@ -162,6 +162,6 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
  	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
 +	.hwinit_regs = hwinit_regs,
 +	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.num_irq_pins = AIROHA_NUM_PINS,
  	.confs_info = {
  		[AIROHA_PINCTRL_CONFS_PULLUP] = {
- 			.confs = pinctrl_pullup_conf,
