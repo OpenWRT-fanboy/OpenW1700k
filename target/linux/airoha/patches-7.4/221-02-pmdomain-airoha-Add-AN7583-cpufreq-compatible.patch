@@ -13,7 +13,7 @@ Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@zyxel.eu>
 
 --- a/drivers/pmdomain/mediatek/airoha-cpu-pmdomain.c
 +++ b/drivers/pmdomain/mediatek/airoha-cpu-pmdomain.c
-@@ -124,6 +124,7 @@ static void airoha_cpu_pmdomain_remove(s
+@@ -118,6 +118,7 @@ static void airoha_cpu_pmdomain_remove(s
  }
  
  static const struct of_device_id airoha_cpu_pmdomain_of_match[] = {

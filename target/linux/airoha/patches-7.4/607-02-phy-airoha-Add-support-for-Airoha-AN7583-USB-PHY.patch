@@ -1,19 +1,6 @@
-From 97de6398f93dbe0007674cd2699a29e055cf79f7 Mon Sep 17 00:00:00 2001
-From: Christian Marangi <ansuelsmth@gmail.com>
-Date: Fri, 19 Sep 2025 06:32:15 +0200
-Subject: [PATCH] phy: airoha: Add support for Airoha AN7583 USB PHY
-
-Add support for USB PHY for Airoha AN7583 SoC, this share some U2 init
-from AN7581 but use a totally different init phase for PLL and
-calibration for U3. Also on AN7583 there is a single USB PHY that init 2
-U2 port and one U3 port. (the USB controller expose 2 hub, one with 2
-usb 2.0 port and one with one 3.0 port)
-
-Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
----
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -777,6 +777,7 @@ L:	linux-arm-kernel@lists.infradead.org
+@@ -811,6 +811,7 @@ L:	linux-arm-kernel@lists.infradead.org
  S:	Maintained
  F:	Documentation/devicetree/bindings/phy/airoha,an7581-usb-phy.yaml
  F:	Documentation/devicetree/bindings/phy/airoha,an7583-usb-phy.yaml
