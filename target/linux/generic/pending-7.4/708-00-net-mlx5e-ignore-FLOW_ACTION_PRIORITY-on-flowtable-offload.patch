@@ -26,7 +26,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
 
 --- a/drivers/net/ethernet/mellanox/mlx5/core/Makefile
 +++ b/drivers/net/ethernet/mellanox/mlx5/core/Makefile
-@@ -55,7 +55,8 @@ mlx5_core-$(CONFIG_MLX5_CLS_ACT)     +=
+@@ -56,7 +56,8 @@ mlx5_core-$(CONFIG_MLX5_CLS_ACT)     +=
  					en/tc/act/vlan.o en/tc/act/vlan_mangle.o en/tc/act/mpls.o \
  					en/tc/act/mirred.o en/tc/act/mirred_nic.o \
  					en/tc/act/ct.o en/tc/act/sample.o en/tc/act/ptype.o \

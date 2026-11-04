@@ -19,8 +19,8 @@ Signed-off-by: Mark Mentovai <mark@mentovai.com>
  usr/gen_init_cpio.c | 8 +++++++-
  1 file changed, 7 insertions(+), 1 deletion(-)
 
---- a/usr/gen_init_cpio.c
-+++ b/usr/gen_init_cpio.c
+--- a/scripts/gen_init_cpio.c
++++ b/scripts/gen_init_cpio.c
 @@ -456,6 +456,7 @@ static int cpio_mkfile(const char *name,
  		    push_pad(namepadlen ? namepadlen : padlen(offset, 4)) < 0)
  			goto error;

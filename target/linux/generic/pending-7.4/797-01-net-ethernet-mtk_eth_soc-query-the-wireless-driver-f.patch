@@ -500,7 +500,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  			     int *idle);
 --- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
-@@ -223,7 +223,7 @@ mtk_flow_get_dsa_port(struct net_device
+@@ -227,7 +227,7 @@ mtk_flow_get_dsa_port(struct net_device
  static int
  mtk_flow_set_output_device(struct mtk_eth *eth, struct mtk_foe_entry *foe,
  			   struct net_device *dev, const u8 *dest_mac,
@@ -509,7 +509,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  {
  	struct mtk_wdma_info info = {};
  	struct mtk_mac *mac;
-@@ -251,6 +251,7 @@ mtk_flow_set_output_device(struct mtk_et
+@@ -255,6 +255,7 @@ mtk_flow_set_output_device(struct mtk_et
  			pse_port = 3;
  		}
  		*wed_index = info.wdma_idx;
@@ -517,7 +517,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  		goto out;
  	}
  
-@@ -318,6 +319,7 @@ mtk_flow_offload_replace(struct mtk_eth
+@@ -322,6 +323,7 @@ mtk_flow_offload_replace(struct mtk_eth
  	int offload_type = 0;
  	int wed_index = -1;
  	u16 addr_type = 0;
@@ -525,7 +525,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	u8 l4proto = 0;
  	int err = 0;
  	int i;
-@@ -527,7 +529,7 @@ mtk_flow_offload_replace(struct mtk_eth
+@@ -531,7 +533,7 @@ mtk_flow_offload_replace(struct mtk_eth
  	}
  
  	err = mtk_flow_set_output_device(eth, &foe, odev, data.eth.h_dest,
@@ -534,7 +534,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	if (err)
  		return err;
  
-@@ -550,7 +552,9 @@ mtk_flow_offload_replace(struct mtk_eth
+@@ -554,7 +556,9 @@ mtk_flow_offload_replace(struct mtk_eth
  	entry->cookie = f->cookie;
  	memcpy(&entry->data, &foe, sizeof(entry->data));
  	entry->wed_index = wed_index;
@@ -544,7 +544,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	err = mtk_foe_entry_commit(eth->ppe[entry->ppe_index], entry);
  	if (err < 0)
-@@ -641,6 +645,66 @@ int mtk_flow_offload_cmd(struct mtk_eth
+@@ -645,6 +649,66 @@ int mtk_flow_offload_cmd(struct mtk_eth
  	return err;
  }
  
@@ -814,7 +814,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  #endif
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
-@@ -2603,7 +2603,7 @@ static int mtk_poll_rx(struct napi_struc
+@@ -2604,7 +2604,7 @@ static int mtk_poll_rx(struct napi_struc
  		}
  
  		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)

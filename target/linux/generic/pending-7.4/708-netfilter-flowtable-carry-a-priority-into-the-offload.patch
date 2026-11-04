@@ -27,7 +27,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
 ---
 --- a/include/net/netfilter/nf_flow_table.h
 +++ b/include/net/netfilter/nf_flow_table.h
-@@ -185,6 +185,7 @@ struct flow_offload {
+@@ -203,6 +203,7 @@ struct flow_offload {
  	unsigned long				flags;
  	u16					type;
  	u32					timeout;
@@ -37,7 +37,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  
 --- a/net/netfilter/nf_flow_table_offload.c
 +++ b/net/netfilter/nf_flow_table_offload.c
-@@ -694,6 +694,17 @@ nf_flow_rule_route_common(struct net *ne
+@@ -696,6 +696,17 @@ nf_flow_rule_route_common(struct net *ne
  	    flow_offload_eth_dst(net, flow, dir, flow_rule) < 0)
  		return -1;
  
@@ -57,8 +57,8 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  	for (i = 0; i < tuple->encap_num; i++) {
 --- a/net/netfilter/nft_flow_offload.c
 +++ b/net/netfilter/nft_flow_offload.c
-@@ -46,6 +46,23 @@ static void flow_offload_ct_tcp(struct n
- 	spin_unlock_bh(&ct->lock);
+@@ -117,6 +117,23 @@ static bool nft_flow_offload_bridge_ok(c
+ 	return true;
  }
  
 +/* The priority a rule set before "flow add". IPv4 forwarding gives every
@@ -81,7 +81,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  static void nft_flow_offload_eval(const struct nft_expr *expr,
  				  struct nft_regs *regs,
  				  const struct nft_pktinfo *pkt)
-@@ -116,6 +133,8 @@ static void nft_flow_offload_eval(const
+@@ -194,6 +211,8 @@ static void nft_flow_offload_eval(const
  	if (tcph)
  		flow_offload_ct_tcp(ct);
  
@@ -92,7 +92,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  	if (ret < 0)
 --- a/net/netfilter/nf_flow_table_ip.c
 +++ b/net/netfilter/nf_flow_table_ip.c
-@@ -417,6 +417,12 @@ static int nf_flow_offload_forward(struc
+@@ -550,6 +550,12 @@ static int nf_flow_offload_forward(struc
  	ip_decrease_ttl(iph);
  	skb_clear_tstamp(skb);
  
@@ -105,7 +105,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
  		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
  
-@@ -705,6 +711,9 @@ static int nf_flow_offload_ipv6_forward(
+@@ -1180,6 +1186,9 @@ static int nf_flow_offload_ipv6_forward(
  	ip6h->hop_limit--;
  	skb_clear_tstamp(skb);
  
@@ -131,7 +131,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  TCP RST and FIN packets are also passed up to the classic IP forwarding path to
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe.c
-@@ -1078,6 +1078,7 @@ static int airoha_ppe_flow_offload_repla
+@@ -1161,6 +1161,7 @@ static int airoha_ppe_flow_offload_repla
  		case FLOW_ACTION_REDIRECT:
  			odev = act->dev;
  			break;
@@ -141,7 +141,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
  		case FLOW_ACTION_VLAN_PUSH:
 --- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
-@@ -374,6 +374,7 @@ mtk_flow_offload_replace(struct mtk_eth
+@@ -378,6 +378,7 @@ mtk_flow_offload_replace(struct mtk_eth
  		case FLOW_ACTION_REDIRECT:
  			odev = act->dev;
  			break;

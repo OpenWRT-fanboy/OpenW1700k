@@ -17,14 +17,14 @@ Signed-off-by: Pali Rohár <pali@kernel.org>
 
 --- a/drivers/watchdog/max63xx_wdt.c
 +++ b/drivers/watchdog/max63xx_wdt.c
-@@ -24,6 +24,7 @@
+@@ -23,6 +23,7 @@
  #include <linux/io.h>
  #include <linux/slab.h>
  #include <linux/property.h>
 +#include <linux/gpio/consumer.h>
+ #include <linux/stringify.h>
  
  #define DEFAULT_HEARTBEAT 60
- #define MAX_HEARTBEAT     60
 @@ -50,6 +51,9 @@ struct max63xx_wdt {
  	void __iomem *base;
  	spinlock_t lock;

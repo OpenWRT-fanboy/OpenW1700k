@@ -17,7 +17,7 @@ Signed-off-by: Quinn O'Shea <qoshea@gmail.com>
 ---
 --- a/include/net/dsa.h
 +++ b/include/net/dsa.h
-@@ -1062,6 +1062,8 @@ struct dsa_switch_ops {
+@@ -1072,6 +1072,8 @@ struct dsa_switch_ops {
  	int	(*port_vlan_filtering)(struct dsa_switch *ds, int port,
  				       bool vlan_filtering,
  				       struct netlink_ext_ack *extack);
@@ -59,7 +59,7 @@ Signed-off-by: Quinn O'Shea <qoshea@gmail.com>
  int dsa_port_mst_enable(struct dsa_port *dp, bool on,
 --- a/net/dsa/user.c
 +++ b/net/dsa/user.c
-@@ -614,6 +614,12 @@ static int dsa_user_port_attr_set(struct
+@@ -615,6 +615,12 @@ static int dsa_user_port_attr_set(struct
  		ret = dsa_port_vlan_filtering(dp, attr->u.vlan_filtering,
  					      extack);
  		break;
