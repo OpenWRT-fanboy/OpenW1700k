@@ -1,48 +1,8 @@
-From 1bfe1cc581ffba2462580496507497840aa018aa Mon Sep 17 00:00:00 2001
-From: Christian Marangi <ansuelsmth@gmail.com>
-Date: Wed, 19 Mar 2025 15:23:50 +0100
-Subject: [PATCH 06/10] phy: move Airoha PCIe PHY driver to dedicated directory
-
-To keep the generic PHY directory tidy, move the PCIe PHY driver to a
-dedicated directory.
-
-This is also in preparation for support of the Airoha USB PHY driver.
-
-Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
----
- MAINTAINERS                               |    4 +-
- drivers/phy/Kconfig                       |   11 +-
- drivers/phy/Makefile                      |    5 +-
- drivers/phy/airoha/Kconfig                |   13 +
- drivers/phy/airoha/Makefile               |    3 +
- drivers/phy/airoha/phy-airoha-pcie-regs.h |  494 ++++++++
- drivers/phy/airoha/phy-airoha-pcie.c      | 1290 +++++++++++++++++++++
- 7 files changed, 1806 insertions(+), 14 deletions(-)
- create mode 100644 drivers/phy/airoha/Kconfig
- create mode 100644 drivers/phy/airoha/Makefile
- create mode 100644 drivers/phy/airoha/phy-airoha-pcie-regs.h
- create mode 100644 drivers/phy/airoha/phy-airoha-pcie.c
-
-# diff --git a/MAINTAINERS b/MAINTAINERS
-# index 2468f4fea5b7..3f930a613658 100644
-# --- a/MAINTAINERS
-# +++ b/MAINTAINERS
-# @@ -733,8 +733,8 @@ M:	Lorenzo Bianconi <lorenzo@kernel.org>
-#  L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
-#  S:	Maintained
-#  F:	Documentation/devicetree/bindings/phy/airoha,en7581-pcie-phy.yaml
-# -F:	drivers/phy/phy-airoha-pcie-regs.h
-# -F:	drivers/phy/phy-airoha-pcie.c
-# +F:	drivers/phy/airoha/phy-airoha-pcie-regs.h
-# +F:	drivers/phy/airoha/phy-airoha-pcie.c
- 
-#  AIROHA SPI SNFI DRIVER
-#  M:	Lorenzo Bianconi <lorenzo@kernel.org>
 --- a/drivers/phy/Kconfig
 +++ b/drivers/phy/Kconfig
-@@ -102,16 +102,6 @@ config PHY_CAN_TRANSCEIVER
- 	  functional modes using gpios and sets the attribute max link
- 	  rate, for CAN drivers.
+@@ -46,16 +46,6 @@ config GENERIC_PHY_MIPI_DPHY
+ 	  Provides a number of helpers a core functions for MIPI D-PHY
+ 	  drivers to us.
  
 -config PHY_AIROHA_PCIE
 -	tristate "Airoha PCIe-PHY Driver"
@@ -54,31 +14,37 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 -	  This driver create the basic PHY instance and provides initialize
 -	  callback for PCIe GEN3 port.
 -
- config PHY_NXP_PTN3222
- 	tristate "NXP PTN3222 1-port eUSB2 to USB2 redriver"
- 	depends on I2C
-@@ -123,6 +113,7 @@ config PHY_NXP_PTN3222
- 	  schemes. It supports all three USB 2.0 data rates: Low Speed, Full
- 	  Speed and High Speed.
+ config PHY_CAN_TRANSCEIVER
+ 	tristate "CAN transceiver PHY"
+ 	select GENERIC_PHY
+@@ -168,6 +158,7 @@ config PHY_XGENE
+ 	help
+ 	  This option enables support for APM X-Gene SoC multi-purpose PHY.
  
 +source "drivers/phy/airoha/Kconfig"
  source "drivers/phy/allwinner/Kconfig"
  source "drivers/phy/amlogic/Kconfig"
- source "drivers/phy/broadcom/Kconfig"
+ source "drivers/phy/apple/Kconfig"
 --- a/drivers/phy/Makefile
 +++ b/drivers/phy/Makefile
-@@ -13,9 +13,9 @@ obj-$(CONFIG_PHY_XGENE)			+= phy-xgene.o
- obj-$(CONFIG_PHY_PISTACHIO_USB)		+= phy-pistachio-usb.o
- obj-$(CONFIG_PHY_SNPS_EUSB2)		+= phy-snps-eusb2.o
- obj-$(CONFIG_USB_LGM_PHY)		+= phy-lgm-usb.o
+@@ -7,7 +7,6 @@ obj-$(CONFIG_PHY_COMMON_PROPS)		+= phy-c
+ obj-$(CONFIG_PHY_COMMON_PROPS_TEST)	+= phy-common-props-test.o
+ obj-$(CONFIG_GENERIC_PHY)		+= phy-core.o
+ obj-$(CONFIG_GENERIC_PHY_MIPI_DPHY)	+= phy-core-mipi-dphy.o
 -obj-$(CONFIG_PHY_AIROHA_PCIE)		+= phy-airoha-pcie.o
- obj-$(CONFIG_PHY_NXP_PTN3222)		+= phy-nxp-ptn3222.o
+ obj-$(CONFIG_PHY_CAN_TRANSCEIVER)	+= phy-can-transceiver.o
+ obj-$(CONFIG_PHY_ECONET_PCIE)		+= phy-econet-pcie.o
+ obj-$(CONFIG_PHY_EYEQ5_ETH)		+= phy-eyeq5-eth.o
+@@ -20,7 +19,8 @@ obj-$(CONFIG_PHY_PISTACHIO_USB)		+= phy-
+ obj-$(CONFIG_PHY_SNPS_EUSB2)		+= phy-snps-eusb2.o
+ obj-$(CONFIG_PHY_XGENE)			+= phy-xgene.o
+ 
 -obj-$(CONFIG_GENERIC_PHY)		+= allwinner/	\
 +obj-$(CONFIG_GENERIC_PHY)		+= airoha/	\
 +					   allwinner/	\
  					   amlogic/	\
- 					   broadcom/	\
- 					   cadence/	\
+ 					   apple/	\
+ 					   aspeed/	\
 --- /dev/null
 +++ b/drivers/phy/airoha/Kconfig
 @@ -0,0 +1,13 @@
@@ -104,7 +70,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 --- /dev/null
 +++ b/drivers/phy/airoha/phy-airoha-pcie-regs.h
 @@ -0,0 +1,494 @@
-+// SPDX-License-Identifier: GPL-2.0-only
++/* SPDX-License-Identifier: GPL-2.0-only */
 +/*
 + * Copyright (c) 2024 AIROHA Inc
 + * Author: Lorenzo Bianconi <lorenzo@kernel.org>

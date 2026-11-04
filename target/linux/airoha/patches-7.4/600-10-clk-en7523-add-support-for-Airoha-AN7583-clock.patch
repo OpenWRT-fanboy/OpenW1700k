@@ -1,30 +1,14 @@
-From 3c5cd99f894c23650accf19fef18b5b9bbe83941 Mon Sep 17 00:00:00 2001
-From: Christian Marangi <ansuelsmth@gmail.com>
-Date: Sat, 8 Feb 2025 00:43:27 +0100
-Subject: [PATCH 10/10] clk: en7523: add support for Airoha AN7583 clock
-
-Add support for Airoha AN7583 clock and reset.
-
-Airoha AN7583 SoC have the same register address of EN7581 but implement
-different bits and additional base clocks. Also reset are different with
-the introduction of 2 dedicated MDIO line and drop of some reset lines.
-
-Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
----
- drivers/clk/clk-en7523.c | 264 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 264 insertions(+)
-
 --- a/drivers/clk/clk-en7523.c
 +++ b/drivers/clk/clk-en7523.c
-@@ -12,6 +12,7 @@
- #include <linux/reset-controller.h>
+@@ -16,6 +16,7 @@
  #include <dt-bindings/clock/en7523-clk.h>
+ #include <dt-bindings/reset/airoha,en7523-reset.h>
  #include <dt-bindings/reset/airoha,en7581-reset.h>
 +#include <dt-bindings/reset/airoha,an7583-reset.h>
- 
- #define RST_NR_PER_BANK			32
- 
-@@ -104,6 +105,14 @@ static const u32 bus7581_base[] = { 6000
+ #include <dt-bindings/clock/econet,en751221-scu.h>
+ #include <dt-bindings/reset/econet,en751221-scu.h>
+ #include <dt-bindings/soc/airoha,scu-ssr.h>
+@@ -171,6 +172,14 @@ static const u32 bus7581_base[] = { 6000
  static const u32 npu7581_base[] = { 800000000, 750000000, 720000000, 600000000 };
  static const u32 crypto_base[] = { 540000000, 480000000 };
  static const u32 emmc7581_base[] = { 200000000, 150000000 };
@@ -36,10 +20,10 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static const u32 npu7583_base[] = { 666000000, 800000000, 720000000, 600000000 };
 +static const u32 crypto7583_base[] = { 540672000, 400000000 };
 +static const u32 emmc7583_base[] = { 150000000, 200000000 };
+ /* EN751221 */
+ static const u32 gsw751221_base[] = { 500000000, 250000000, 400000000, 200000000 };
  
- static const struct en_clk_desc en7523_base_clks[] = {
- 	{
-@@ -306,6 +315,138 @@ static const struct en_clk_desc en7581_b
+@@ -375,6 +384,138 @@ static const struct en_clk_desc en7581_b
  	}
  };
  
@@ -178,8 +162,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  static const u16 en7581_rst_ofs[] = {
  	REG_RST_CTRL2,
  	REG_RST_CTRL1,
-@@ -369,6 +510,60 @@ static const u16 en7581_rst_map[] = {
- 	[EN7581_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
+@@ -498,6 +639,60 @@ static const u16 en7581_rst_map[] = {
+ 	[EN7581_PCIC_PERSTOUT2_RST]	= 2 * RST_NR_PER_BANK + 16,
  };
  
 +static const u16 an7583_rst_map[] = {
@@ -236,46 +220,58 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	[AN7583_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
 +};
 +
- static u32 en7523_get_base_rate(const struct en_clk_desc *desc, u32 val)
- {
- 	if (!desc->base_bits)
-@@ -881,6 +1076,62 @@ static int en7581_clk_hw_init(struct pla
- 	return en7581_reset_register(&pdev->dev, clk_map);
+ static const u16 en751221_rst_map[] = {
+ 	/* RST_CTRL2 */
+ 	[EN751221_XPON_PHY_RST]		= 0,
+@@ -971,6 +1166,29 @@ static void en7581_register_clocks(struc
+ 	clk_data->hws[EN7523_CLK_PCIE] = hw;
  }
  
-+static int an7583_reset_register(struct device *dev, struct regmap *map)
++static void an7583_register_clocks(struct device *dev, struct clk_hw_onecell_data *clk_data,
++				   struct regmap *map, void __iomem *base)
 +{
-+	struct en_rst_data *rst_data;
++	struct clk_hw *hw;
++	int i;
 +
-+	rst_data = devm_kzalloc(dev, sizeof(*rst_data), GFP_KERNEL);
-+	if (!rst_data)
-+		return -ENOMEM;
++	for (i = 0; i < ARRAY_SIZE(an7583_base_clks); i++) {
++		const struct en_clk_desc *desc = &an7583_base_clks[i];
 +
-+	rst_data->bank_ofs = en7581_rst_ofs;
-+	rst_data->idx_map = an7583_rst_map;
-+	rst_data->map = map;
++		hw = en_clk_register(dev, desc, map);
++		if (IS_ERR(hw)) {
++			pr_err("Failed to register clk %s: %ld\n",
++			       desc->name, PTR_ERR(hw));
++			continue;
++		}
 +
-+	rst_data->rcdev.nr_resets = ARRAY_SIZE(an7583_rst_map);
-+	rst_data->rcdev.of_xlate = en7523_reset_xlate;
-+	rst_data->rcdev.ops = &en7581_reset_ops;
-+	rst_data->rcdev.of_node = dev->of_node;
-+	rst_data->rcdev.of_reset_n_cells = 1;
-+	rst_data->rcdev.owner = THIS_MODULE;
-+	rst_data->rcdev.dev = dev;
++		clk_data->hws[desc->id] = hw;
++	}
 +
-+	return devm_reset_controller_register(dev, &rst_data->rcdev);
++	hw = en7523_register_pcie_clk(dev, base);
++	clk_data->hws[EN7523_CLK_PCIE] = hw;
 +}
 +
+ static int en7523_reset_update(struct reset_controller_dev *rcdev,
+ 			       unsigned long id, bool assert)
+ {
+@@ -1354,6 +1572,52 @@ static void en751221_register_clocks(str
+ 				  gsw751221_base[rate]);
+ }
+ 
 +static int an7583_clk_hw_init(struct platform_device *pdev,
-+			      const struct en_clk_soc_data *soc_data,
 +			      struct clk_hw_onecell_data *clk_data)
 +{
++	struct en_clk_priv *priv = platform_get_drvdata(pdev);
 +	struct device *dev = &pdev->dev;
-+	struct regmap *map, *clk_map;
++	struct regmap *map;
 +	void __iomem *base;
-+	int err;
++	u32 val;
++	int ret;
 +
-+	map = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,chip-scu");
++	if (of_property_present(dev->of_node, "airoha,chip-scu"))
++		map = syscon_regmap_lookup_by_phandle(dev->of_node,
++						      "airoha,chip-scu");
++	else
++		map = syscon_regmap_lookup_by_compatible("airoha,an7583-chip-scu");
 +	if (IS_ERR(map))
 +		return PTR_ERR(map);
 +
@@ -283,32 +279,39 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	if (IS_ERR(base))
 +		return PTR_ERR(base);
 +
-+	clk_map = devm_regmap_init_mmio(&pdev->dev, base, &en7523_clk_regmap_config);
-+	if (IS_ERR(clk_map))
-+		return PTR_ERR(clk_map);
++	priv->base = base;
 +
-+	err = en75xx_register_clocks(dev, soc_data, clk_data, map, clk_map);
-+	if (err)
-+		return err;
++	an7583_register_clocks(&pdev->dev, clk_data, map, base);
 +
-+	regmap_clear_bits(clk_map, REG_NP_SCU_SSTR,
-+			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
-+	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
-+			   FIELD_PREP(REG_PCIE_CTRL, 3));
++	val = readl(base + REG_NP_SCU_SSTR);
++	val &= ~(REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
++	writel(val, base + REG_NP_SCU_SSTR);
++	val = readl(base + REG_NP_SCU_PCIC);
++	writel(val | 3, base + REG_NP_SCU_PCIC);
 +
-+	return an7583_reset_register(dev, clk_map);
++	val = readl(base + REG_RST_CTRL1);
++	val |= REG_PCIE_HB_RST;
++	writel(val, base + REG_RST_CTRL1);
++	val &= ~REG_PCIE_HB_RST;
++	writel(val, base + REG_RST_CTRL1);
++
++	ret = en7581_reset_register(&pdev->dev, base, an7583_rst_map,
++				    ARRAY_SIZE(an7583_rst_map), en7581_rst_ofs);
++	if (ret)
++		return ret;
++
++	return en7581_serdes_phy_register(&pdev->dev);
 +}
 +
- static int en7523_clk_probe(struct platform_device *pdev)
+ static int en751221_clk_hw_init(struct platform_device *pdev,
+ 				struct clk_hw_onecell_data *clk_data)
  {
- 	const struct en_clk_soc_data *soc_data;
-@@ -940,9 +1191,23 @@ static const struct en_clk_soc_data en75
+@@ -1438,6 +1702,18 @@ static const struct en_clk_soc_data en75
  	.hw_init = en7581_clk_hw_init,
  };
  
 +static const struct en_clk_soc_data an7583_data = {
 +	.probe_child = true,
-+	.base_clks = an7583_base_clks,
 +	/* We increment num_clocks by 1 to account for additional PCIe clock */
 +	.num_clocks = ARRAY_SIZE(an7583_base_clks) + 1,
 +	.pcie_ops = {
@@ -319,10 +322,14 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	.hw_init = an7583_clk_hw_init,
 +};
 +
+ static const struct en_clk_soc_data en751221_data = {
+ 	.num_clocks = EN751221_MAX_CLKS,
+ 	.pcie_ops = {
+@@ -1451,6 +1727,7 @@ static const struct en_clk_soc_data en75
  static const struct of_device_id of_match_clk_en7523[] = {
  	{ .compatible = "airoha,en7523-scu", .data = &en7523_data },
  	{ .compatible = "airoha,en7581-scu", .data = &en7581_data },
 +	{ .compatible = "airoha,an7583-scu", .data = &an7583_data },
+ 	{ .compatible = "econet,en751221-scu", .data = &en751221_data },
  	{ /* sentinel */ }
  };
- 
