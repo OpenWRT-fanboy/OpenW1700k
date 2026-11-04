@@ -25,7 +25,7 @@ v3:
 
 --- a/drivers/leds/trigger/ledtrig-netdev.c
 +++ b/drivers/leds/trigger/ledtrig-netdev.c
-@@ -634,9 +634,12 @@ static void netdev_trig_work(struct work
+@@ -676,9 +676,12 @@ static void netdev_trig_work(struct work
  	unsigned long interval;
  	int invert;
  
@@ -38,7 +38,7 @@ v3:
  		return;
  	}
  
-@@ -644,8 +647,10 @@ static void netdev_trig_work(struct work
+@@ -686,8 +689,10 @@ static void netdev_trig_work(struct work
  	if (!test_bit(TRIGGER_NETDEV_TX, &trigger_data->mode) &&
  	    !test_bit(TRIGGER_NETDEV_RX, &trigger_data->mode) &&
  	    !test_bit(TRIGGER_NETDEV_TX_ERR, &trigger_data->mode) &&
@@ -50,7 +50,7 @@ v3:
  
  	dev_stats = dev_get_stats(trigger_data->net_dev, &temp);
  	new_activity =
-@@ -682,6 +687,8 @@ static void netdev_trig_work(struct work
+@@ -728,6 +733,8 @@ static void netdev_trig_work(struct work
  
  	schedule_delayed_work(&trigger_data->work,
  			(atomic_read(&trigger_data->interval)*2));

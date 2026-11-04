@@ -17,7 +17,7 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
 
 --- a/drivers/net/dsa/Kconfig
 +++ b/drivers/net/dsa/Kconfig
-@@ -160,6 +160,7 @@ config NET_DSA_VITESSE_VSC73XX_PLATFORM
+@@ -177,6 +177,7 @@ config NET_DSA_VITESSE_VSC73XX_PLATFORM
  config NET_DSA_YT921X
  	tristate "Motorcomm YT9215 ethernet switch chip support"
  	select NET_DSA_TAG_YT921X

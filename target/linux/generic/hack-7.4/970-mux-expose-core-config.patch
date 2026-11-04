@@ -16,17 +16,17 @@ prompt that makes it visible and thus user selectable.
 
 Signed-off-by: Robert Marko <robert.marko@sartura.hr>
 ---
- drivers/mux/Kconfig | 2 +-
+drivers/mux/Kconfig | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 --- a/drivers/mux/Kconfig
 +++ b/drivers/mux/Kconfig
-@@ -4,7 +4,7 @@
- #
+@@ -7,7 +7,7 @@ config MULTIPLEXER
+ 	bool
  
- config MULTIPLEXER
--	tristate
-+	tristate "Multiplexer core"
- 
- menu "Multiplexer drivers"
- 	depends on MULTIPLEXER
+ config MUX_CORE
+-	bool "Generic Multiplexer Support"
++	tristate "Generic Multiplexer Support"
+ 	select MULTIPLEXER
+ 	help
+ 	  This framework is designed to abstract multiplexer handling for
