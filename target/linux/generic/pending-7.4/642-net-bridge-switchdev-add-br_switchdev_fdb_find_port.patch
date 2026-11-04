@@ -17,7 +17,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
 ---
 --- a/include/linux/if_bridge.h
 +++ b/include/linux/if_bridge.h
-@@ -172,6 +172,19 @@ static inline int br_mst_get_state(const
+@@ -201,6 +201,19 @@ static inline int br_mst_get_state(const
  }
  #endif
  
@@ -102,7 +102,7 @@ Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
 +	    !test_bit(BR_FDB_ADDED_BY_USER, &f->flags))
 +		return NULL;
 +
-+	p = READ_ONCE(f->dst);
++	p = br_fdb_dst_port(f);
 +
 +	return p ? p->dev : NULL;
 +}

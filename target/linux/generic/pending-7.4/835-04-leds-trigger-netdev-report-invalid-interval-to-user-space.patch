@@ -22,7 +22,7 @@ v6:
 
 --- a/drivers/leds/trigger/ledtrig-netdev.c
 +++ b/drivers/leds/trigger/ledtrig-netdev.c
-@@ -468,12 +468,13 @@ static ssize_t interval_store(struct dev
+@@ -502,12 +502,13 @@ static ssize_t interval_store(struct dev
  		return ret;
  
  	/* impose some basic bounds on the timer interval */

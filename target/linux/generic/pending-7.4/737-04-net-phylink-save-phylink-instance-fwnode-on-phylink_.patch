@@ -19,7 +19,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 
 --- a/drivers/net/phy/phylink.c
 +++ b/drivers/net/phy/phylink.c
-@@ -44,6 +44,7 @@ struct phylink {
+@@ -46,6 +46,7 @@ struct phylink {
  	const struct phylink_mac_ops *mac_ops;
  	struct phylink_config *config;
  	struct phylink_pcs *pcs;
@@ -27,7 +27,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	struct device *dev;
  	unsigned int old_link_state:1;
  
-@@ -1983,6 +1984,7 @@ struct phylink *phylink_create(struct ph
+@@ -2179,6 +2180,7 @@ struct phylink *phylink_create(struct ph
  	INIT_LIST_HEAD(&pl->pcs_list);
  
  	pl->config = config;
@@ -35,7 +35,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	if (config->type == PHYLINK_NETDEV) {
  		pl->netdev = to_net_dev(config->dev);
  		netif_carrier_off(pl->netdev);
-@@ -2067,6 +2069,7 @@ unlink_pcs_list:
+@@ -2263,6 +2265,7 @@ unlink_pcs_list:
  		pcs->phylink = NULL;
  	}
  free_pl:
@@ -43,7 +43,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	kfree(pl);
  	return ERR_PTR(ret);
  }
-@@ -2097,6 +2100,8 @@ void phylink_destroy(struct phylink *pl)
+@@ -2294,6 +2297,8 @@ void phylink_destroy(struct phylink *pl)
  		list_del(&pcs->list);
  	}
  

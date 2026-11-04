@@ -48,7 +48,7 @@ v2:
 
 --- a/drivers/leds/trigger/ledtrig-netdev.c
 +++ b/drivers/leds/trigger/ledtrig-netdev.c
-@@ -56,6 +56,8 @@
+@@ -57,6 +57,8 @@
  
  struct led_netdev_data {
  	struct mutex lock;
@@ -57,7 +57,7 @@ v2:
  
  	struct delayed_work work;
  	struct notifier_block notifier;
-@@ -315,8 +317,9 @@ static ssize_t device_name_store(struct
+@@ -336,8 +338,9 @@ static ssize_t device_name_store(struct
  	if (ret < 0)
  		return ret;
  
@@ -69,7 +69,7 @@ v2:
  
  	return size;
  }
-@@ -510,18 +513,19 @@ static umode_t netdev_trig_link_speed_vi
+@@ -544,22 +547,23 @@ static umode_t netdev_trig_link_speed_vi
  	 * Stop at the first matching entry as we care only to check if a particular
  	 * speed is supported and not the kind.
  	 */
@@ -84,6 +84,10 @@ v2:
 -		CHECK_LINK_MODE_ATTR(2500);
 -		CHECK_LINK_MODE_ATTR(5000);
 -		CHECK_LINK_MODE_ATTR(10000);
+-		CHECK_LINK_MODE_ATTR(25000);
+-		CHECK_LINK_MODE_ATTR(40000);
+-		CHECK_LINK_MODE_ATTR(50000);
+-		CHECK_LINK_MODE_ATTR(100000);
 -	}
 +	scoped_guard(mutex, &trigger_data->lock)
 +		for_each_set_bit(mode, supported_link_modes, __ETHTOOL_LINK_MODE_MASK_NBITS) {
@@ -97,11 +101,15 @@ v2:
 +			CHECK_LINK_MODE_ATTR(2500);
 +			CHECK_LINK_MODE_ATTR(5000);
 +			CHECK_LINK_MODE_ATTR(10000);
++			CHECK_LINK_MODE_ATTR(25000);
++			CHECK_LINK_MODE_ATTR(40000);
++			CHECK_LINK_MODE_ATTR(50000);
++			CHECK_LINK_MODE_ATTR(100000);
 +		}
  
  	return 0;
  }
-@@ -561,7 +565,6 @@ static const struct attribute_group netd
+@@ -603,7 +607,6 @@ static const struct attribute_group netd
  
  static const struct attribute_group *netdev_trig_groups[] = {
  	&netdev_trig_attrs_group,
@@ -109,7 +117,7 @@ v2:
  	NULL,
  };
  
-@@ -609,10 +612,6 @@ static int netdev_trig_notify(struct not
+@@ -651,10 +654,6 @@ static int netdev_trig_notify(struct not
  		fallthrough;
  	case NETDEV_CHANGE:
  		get_device_state(trigger_data);
@@ -120,7 +128,7 @@ v2:
  		break;
  	}
  
-@@ -620,6 +619,12 @@ static int netdev_trig_notify(struct not
+@@ -662,6 +661,12 @@ static int netdev_trig_notify(struct not
  
  	mutex_unlock(&trigger_data->lock);
  
@@ -133,7 +141,7 @@ v2:
  	return NOTIFY_DONE;
  }
  
-@@ -703,6 +708,7 @@ static int netdev_trig_activate(struct l
+@@ -749,6 +754,7 @@ static int netdev_trig_activate(struct l
  		return -ENOMEM;
  
  	mutex_init(&trigger_data->lock);
@@ -141,7 +149,7 @@ v2:
  
  	trigger_data->notifier.notifier_call = netdev_trig_notify;
  	trigger_data->notifier.priority = 10;
-@@ -736,12 +742,23 @@ static int netdev_trig_activate(struct l
+@@ -782,12 +788,23 @@ static int netdev_trig_activate(struct l
  
  	led_set_trigger_data(led_cdev, trigger_data);
  
@@ -157,9 +165,9 @@ v2:
 -	}
 +	if (rc)
 +		goto err_remove_group;
-+
-+	return 0;
  
++	return 0;
++
 +err_remove_group:
 +	sysfs_remove_group(&led_cdev->dev->kobj,
 +			   &netdev_trig_link_speed_attrs_group);
@@ -169,7 +177,7 @@ v2:
  	return rc;
  }
  
-@@ -751,6 +768,9 @@ static void netdev_trig_deactivate(struc
+@@ -797,6 +814,9 @@ static void netdev_trig_deactivate(struc
  
  	unregister_netdevice_notifier(&trigger_data->notifier);
  

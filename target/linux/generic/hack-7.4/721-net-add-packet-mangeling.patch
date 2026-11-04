@@ -19,7 +19,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -1750,6 +1750,7 @@ enum netdev_priv_flags {
+@@ -1802,6 +1802,7 @@ enum netdev_priv_flags {
  	IFF_L3MDEV_RX_HANDLER		= 1<<29,
  	IFF_NO_ADDRCONF			= BIT_ULL(30),
  	IFF_TX_SKB_NO_LINEAR		= BIT_ULL(31),
@@ -27,7 +27,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  };
  
  /* Specifies the type of the struct net_device::ml_priv pointer */
-@@ -2252,6 +2253,11 @@ struct net_device {
+@@ -2323,6 +2324,11 @@ struct net_device {
  	const struct tlsdev_ops *tlsdev_ops;
  #endif
  
@@ -39,7 +39,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	unsigned int		operstate;
  	unsigned char		link_mode;
  
-@@ -2328,6 +2334,10 @@ struct net_device {
+@@ -2400,6 +2406,10 @@ struct net_device {
  	struct psp_dev __rcu	*psp_dev;
  #endif
  
@@ -52,7 +52,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
   */
 --- a/include/linux/skbuff.h
 +++ b/include/linux/skbuff.h
-@@ -3347,6 +3347,10 @@ static inline int pskb_trim(struct sk_bu
+@@ -3370,6 +3370,10 @@ static __always_inline int pskb_trim(str
  	return (len < skb->len) ? __pskb_trim(skb, len) : 0;
  }
  
@@ -63,7 +63,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  /**
   *	pskb_trim_unique - remove end from a paged unique (not cloned) buffer
   *	@skb: buffer to alter
-@@ -3512,16 +3516,6 @@ static inline struct sk_buff *dev_alloc_
+@@ -3535,16 +3539,6 @@ static inline struct sk_buff *dev_alloc_
  }
  
  
@@ -97,7 +97,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	help
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
-@@ -3889,6 +3889,11 @@ static int xmit_one(struct sk_buff *skb,
+@@ -4063,6 +4063,11 @@ static int xmit_one(struct sk_buff *skb,
  	if (dev_nit_active_rcu(dev))
  		dev_queue_xmit_nit(skb, dev);
  
@@ -116,10 +116,10 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  #include <linux/iov_iter.h>
  #include <linux/crc32.h>
 +#include <linux/if.h>
+ #include <kunit/visibility.h>
  
  #include <net/protocol.h>
- #include <net/dst.h>
-@@ -254,6 +255,22 @@ void *__napi_alloc_frag_align(unsigned i
+@@ -257,6 +258,22 @@ void *__napi_alloc_frag_align(unsigned i
  }
  EXPORT_SYMBOL(__napi_alloc_frag_align);
  
@@ -144,7 +144,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	void *data;
 --- a/net/ethernet/eth.c
 +++ b/net/ethernet/eth.c
-@@ -159,6 +159,12 @@ __be16 eth_type_trans(struct sk_buff *sk
+@@ -157,6 +157,12 @@ __be16 eth_type_trans(struct sk_buff *sk
  	const struct ethhdr *eth;
  
  	skb->dev = dev;

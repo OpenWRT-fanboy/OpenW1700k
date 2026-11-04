@@ -15,7 +15,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
 ---
 --- a/include/net/dsa.h
 +++ b/include/net/dsa.h
-@@ -1055,6 +1055,9 @@ struct dsa_switch_ops {
+@@ -1065,6 +1065,9 @@ struct dsa_switch_ops {
  				     struct netlink_ext_ack *extack);
  	void	(*port_set_host_flood)(struct dsa_switch *ds, int port,
  				       bool uc, bool mc);
@@ -27,7 +27,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	 * VLAN support
 --- a/net/dsa/user.c
 +++ b/net/dsa/user.c
-@@ -620,6 +620,15 @@ static int dsa_user_port_attr_set(struct
+@@ -621,6 +621,15 @@ static int dsa_user_port_attr_set(struct
  
  		ret = dsa_port_vlan_protocol(dp, attr->u.vlan_protocol, extack);
  		break;
