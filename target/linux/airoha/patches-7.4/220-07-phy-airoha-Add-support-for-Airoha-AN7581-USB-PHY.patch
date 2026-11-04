@@ -1,41 +1,6 @@
-From fadd22890b239e5a251dbe47367cfbeb1ea105f7 Mon Sep 17 00:00:00 2001
-From: Christian Marangi <ansuelsmth@gmail.com>
-Date: Fri, 7 Feb 2025 13:28:40 +0100
-Subject: [PATCH 07/10] phy: airoha: Add support for Airoha AN7581 USB PHY
-
-Add support for Airoha AN7581 USB PHY driver. AN7581 supports up to 2
-USB port with USB 2.0 mode always supported and USB 3.0 mode available
-only if the Serdes port is correctly configured for USB 3.0.
-
-The second USB port on the SoC can be both used for USB 3.0 operation or
-PCIe. (toggled by the SCU SSR register and configured by the USB PHY
-driver)
-
-If the USB 3.0 mode is not configured, the modes needs to be also
-disabled in the xHCI node or the driver will report unsable clock and
-fail probe.
-
-Also USB 3.0 PHY instance are provided only if the airoha,serdes-port
-and airoha,scu property is defined in DT, if it's not then USB 3.0 PHY
-is assumed not supported.
-
-For USB 2.0 Slew Rate calibration, airoha,usb2-monitor-clk-sel is
-mandatory and is used to select the monitor clock for calibration.
-
-Normally it's 1 for USB port 1 and 2 for USB port 2.
-
-Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
----
- MAINTAINERS                         |   1 +
- drivers/phy/airoha/Kconfig          |  10 +
- drivers/phy/airoha/Makefile         |   1 +
- drivers/phy/airoha/phy-airoha-usb.c | 597 ++++++++++++++++++++++++++++
- 4 files changed, 609 insertions(+)
- create mode 100644 drivers/phy/airoha/phy-airoha-usb.c
-
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -776,6 +776,7 @@ M:	Christian Marangi <ansuelsmth@gmail.c
+@@ -810,6 +810,7 @@ M:	Christian Marangi <ansuelsmth@gmail.c
  L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
  S:	Maintained
  F:	Documentation/devicetree/bindings/phy/airoha,an7581-usb-phy.yaml
