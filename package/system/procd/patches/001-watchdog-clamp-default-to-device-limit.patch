@@ -1,0 +1,53 @@
+From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Subject: [PATCH] procd: limit watchdog timeout to the device maximum
+
+The default 30-second timeout exceeds the 28-second limit of the Airoha
+AN7581 watchdog. Read the kernel's maximum during initialization so
+early init and subsequent procd stages use a supported default. Leave
+explicit timeout requests and devices without sysfs limits unchanged.
+
+Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+
+---
+
+--- a/watchdog.c
++++ b/watchdog.c
+@@ -18,6 +18,7 @@
+ #include <sys/stat.h>
+ #include <fcntl.h>
+ 
++#include <stdio.h>
+ #include <unistd.h>
+ 
+ #include <libubox/uloop.h>
+@@ -87,8 +88,23 @@ static void watchdog_close(bool with_re
+ 	wdt_fd = -1;
+ }
+ 
++static void watchdog_limit_default_timeout(void)
++{
++	unsigned int max_timeout;
++	FILE *fp;
++
++	/* /dev/watchdog is the legacy alias for watchdog0. */
++	fp = fopen("/sys/class/watchdog/watchdog0/max_timeout", "r");
++	if (fp) {
++		if (fscanf(fp, "%u", &max_timeout) == 1 && max_timeout &&
++		    wdt_drv_timeout > max_timeout)
++			wdt_drv_timeout = max_timeout;
++		fclose(fp);
++	}
++}
++
+ static int watchdog_set_drv_timeout(void)
+ {
+ 	if (wdt_fd < 0)
+ 		return -1;
+ 
+@@ -202,5 +218,6 @@ void watchdog_init(int preinit)
+ 		return;
+ 
+ 	LOG("- watchdog -\n");
++	watchdog_limit_default_timeout();
+ 	watchdog_set_drv_timeout();
+ 	watchdog_timeout_cb(&wdt_timeout);
