@@ -1,0 +1,45 @@
+--- a/defenvs/an7581_w1700k_env
++++ b/defenvs/an7581_w1700k_env
+@@ -7,7 +7,7 @@
+ bootled_pwr=status:red
+ bootled_rec=status:blue
+ boot_production=run check_lan_leds ; ubi part ubi && ubi read $loadaddr fit && bootm $loadaddr#$bootconf
+-boot_recovery=led $bootled_rec on ; run ubi_read_recovery ; bootm $initaddr#$bootconf ; led $bootled_rec off
++boot_recovery=led $bootled_rec on ; run ubi_read_recovery ; bootm $initaddr#$bootconf
+ boot_tftp=tftpboot $initaddr $bootfile && bootm $initaddr#$bootconf
+ boot_installer=tftpboot $initaddr $installfile && bootm $initaddr#$bootconf
+ bootconf=config-1
+@@ -18,7 +18,7 @@
+ bootmenu_title=      34m( ( ( mOpenWrt34m ) ) )
+ bootmenu_0=Run default boot command.=run boot_production ; run bootcmd_failsafe
+ bootmenu_1=Boot system via TFTP.=run boot_tftp ; run bootmenu_confirm_return
+-bootmenu_2=Boot recovery system from flash.=run boot_recovery ; run bootmenu_confirm_return
++bootmenu_2=Boot recovery system from flash.=run boot_recovery ; led $bootled_rec off ; run bootmenu_confirm_return
+ bootmenu_3=Boot installer via TFTP.=run boot_installer ; run bootmenu_confirm_return
+ bootmenu_4=Reboot.=reset
+ ubi_read_recovery=ubi check recovery && ubi read $initaddr recovery
+@@ -42,3 +42,5 @@
+ link_lan_leds=led $led_lan3_green on ; led $led_lan3_yellow on ; led $led_lan4_green on ; led $led_lan4_yellow on
+ off_lan_leds=led $led_lan3_green off ; led $led_lan3_yellow off ; led $led_lan4_green off ; led $led_lan4_yellow off
+ check_lan_leds=run link_lan_leds
++check_buttons=if button reset ; then led $bootled_rec on ; ubi part ubi && run boot_recovery ; run boot_tftp ; run bootcmd_failsafe ; fi
++preboot=run check_buttons
+--- a/configs/an7581_w1700k_defconfig
++++ b/configs/an7581_w1700k_defconfig
+@@ -2,6 +2,7 @@
+ CONFIG_ARCH_AIROHA=y
+ CONFIG_AUTOBOOT_KEYED=y
+ CONFIG_AUTOBOOT_MENU_SHOW=y
++CONFIG_USE_PREBOOT=y
+ CONFIG_POSITION_INDEPENDENT=y
+ CONFIG_TARGET_AN7581=y
+ CONFIG_TEXT_BASE=0x81E00000
+@@ -53,6 +54,8 @@
+ CONFIG_SYS_RX_ETH_BUFFER=8
+ CONFIG_REGMAP=y
+ CONFIG_SYSCON=y
++CONFIG_BUTTON=y
++CONFIG_BUTTON_GPIO=y
+ CONFIG_CLK=y
+ CONFIG_MTK_TCP=y
+ CONFIG_MTK_HTTPD=y
