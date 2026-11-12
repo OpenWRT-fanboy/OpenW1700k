@@ -455,6 +455,11 @@ $(_endef)
     $$(PACK_$(1)) : $(call shexport,Package/$(1)/description)
     $$(PACK_$(1)) : export PATH=$$(TARGET_PATH_PKG)
     $$(PACK_$(1)) : export SOURCE_DATE_EPOCH=$$(PKG_SOURCE_DATE_EPOCH)
+    # The .provides target re-runs Package/install, which may invoke host tools
+    # from the package staging prefix (e.g. LuCI's ucode template compiler).
+    # Target-specific PATH from PACK_$(1) does not propagate to a sibling
+    # target, so it needs the same PATH independent of the inherited one.
+    $(PKG_INFO_DIR)/$(1).provides : export PATH=$$(TARGET_PATH_PKG)
     $(PKG_INFO_DIR)/$(1).provides $$(PACK_$(1)): $(STAMP_BUILT) $(INCLUDE_DIR)/package-pack.mk
 	rm -rf $$(IDIR_$(1))
 ifeq ($$(CONFIG_USE_APK),)
