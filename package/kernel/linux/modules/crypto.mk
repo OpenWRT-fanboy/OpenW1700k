@@ -82,8 +82,10 @@ define KernelPackage/crypto-blake2b
   TITLE:=Support for BLAKE2b cryptographic hash function (RFC 7693)
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:=CONFIG_CRYPTO_BLAKE2B
-  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic)
+  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko@lt7.3 \
+	$(LINUX_DIR)/crypto/blake2b.ko@ge7.3 \
+	$(LINUX_DIR)/lib/crypto/libblake2b.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic@lt7.3 blake2b@ge7.3 libblake2b@ge7.3)
   $(call AddDepends/crypto)
 endef
 
@@ -347,11 +349,11 @@ define KernelPackage/crypto-ghash
   TITLE:=GHASH digest CryptoAPI module
   DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
   KCONFIG:= \
-	CONFIG_CRYPTO_GHASH \
+	CONFIG_CRYPTO_GHASH@lt7.3 \
 	CONFIG_CRYPTO_GHASH_ARM_CE \
 	CONFIG_CRYPTO_GHASH_ARM64_CE
-  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
+  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko@lt7.3
+  AUTOLOAD:=$(call AutoLoad,09,ghash-generic@lt7.3)
   $(call AddDepends/crypto)
 endef
 
@@ -695,6 +697,7 @@ define KernelPackage/crypto-md5
   $(call AddDepends/crypto)
 endef
 
+
 $(eval $(call KernelPackage,crypto-md5))
 
 
@@ -741,8 +744,9 @@ define KernelPackage/crypto-rsa
   FILES:= \
 	$(LINUX_DIR)/lib/crypto/mpi/mpi.ko \
 	$(LINUX_DIR)/crypto/akcipher.ko \
+	$(LINUX_DIR)/crypto/sig.ko@ge7.3 \
 	$(LINUX_DIR)/crypto/rsa_generic.ko
-  AUTOLOAD:=$(call AutoLoad,10,rsa_generic)
+  AUTOLOAD:=$(call AutoLoad,10,sig@ge7.3 rsa_generic)
   $(call AddDepends/crypto)
 endef
 
@@ -826,8 +830,10 @@ define KernelPackage/crypto-sha3
   TITLE:=SHA3 digest CryptoAPI module
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= CONFIG_CRYPTO_SHA3
-  FILES:=$(LINUX_DIR)/crypto/sha3_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha3_generic)
+  FILES:=$(LINUX_DIR)/crypto/sha3_generic.ko@lt7.3 \
+	$(LINUX_DIR)/crypto/sha3.ko@ge7.3 \
+	$(LINUX_DIR)/lib/crypto/libsha3.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,09,sha3_generic@lt7.3 sha3@ge7.3 libsha3@ge7.3)
   $(call AddDepends/crypto)
 endef
 
@@ -860,6 +866,7 @@ define KernelPackage/crypto-sha512
   AUTOLOAD:=$(call AutoLoad,09,sha512)
   $(call AddDepends/crypto)
 endef
+
 
 $(eval $(call KernelPackage,crypto-sha512))
 
