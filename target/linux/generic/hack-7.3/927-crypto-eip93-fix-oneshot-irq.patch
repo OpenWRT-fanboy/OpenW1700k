@@ -1,0 +1,28 @@
+Subject: [PATCH] crypto: eip93 - fix IRQF_ONESHOT without a thread handler
+
+The driver registers a hard IRQ handler with IRQF_ONESHOT but passes
+a NULL thread_fn. Linux 7.3 warns about this combination in
+request_threaded_irq():
+
+  WARNING: kernel/irq/manage.c:1503 at __setup_irq+0x108/0x8d4
+  Modules linked in: crypto_hw_eip93(+)
+
+The handler only masks the interrupt and schedules a tasklet, so it
+does not need a threaded handler. Use devm_request_irq() instead.
+
+---
+
+--- a/drivers/crypto/inside-secure/eip93/eip93-main.c
++++ b/drivers/crypto/inside-secure/eip93/eip93-main.c
+@@ -430,9 +430,8 @@
+ 	if (eip93->irq < 0)
+ 		return eip93->irq;
+ 
+-	ret = devm_request_threaded_irq(eip93->dev, eip93->irq, eip93_irq_handler,
+-					NULL, IRQF_ONESHOT,
+-					dev_name(eip93->dev), eip93);
++	ret = devm_request_irq(eip93->dev, eip93->irq, eip93_irq_handler,
++			       0, dev_name(eip93->dev), eip93);
+ 	if (ret)
+ 		return ret;
+ 

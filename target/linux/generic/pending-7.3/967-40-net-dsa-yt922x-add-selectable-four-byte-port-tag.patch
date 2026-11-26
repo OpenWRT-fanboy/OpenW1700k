@@ -21,7 +21,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
 ---
 --- a/Documentation/devicetree/bindings/net/dsa/dsa-port.yaml
 +++ b/Documentation/devicetree/bindings/net/dsa/dsa-port.yaml
-@@ -58,6 +58,8 @@ properties:
+@@ -58,6 +58,8 @@
        - rtl8_4
        - rtl8_4t
        - seville
@@ -32,7 +32,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  if:
 --- a/drivers/net/dsa/yt921x.c
 +++ b/drivers/net/dsa/yt921x.c
-@@ -6142,30 +6142,66 @@ static int yt922x_chip_setup(struct yt92
+@@ -6142,30 +6142,66 @@
  	return 0;
  }
  
@@ -119,7 +119,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  }
  
  static int yt922x_cpu_port_set(struct yt921x_priv *priv)
-@@ -6175,7 +6211,7 @@ static int yt922x_cpu_port_set(struct yt
+@@ -6175,7 +6211,7 @@
  	int res;
  
  	/* cpu tag mode */
@@ -128,7 +128,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	if (res)
  		return res;
  
-@@ -6255,6 +6291,7 @@ static void yt922x_dsa_teardown(struct d
+@@ -6255,6 +6291,7 @@
  static const struct dsa_switch_ops yt922x_dsa_switch_ops = {
  	/* port */
  	.get_tag_protocol	= yt922x_dsa_get_tag_protocol,
@@ -166,22 +166,22 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
 +#endif
 --- a/include/net/dsa.h
 +++ b/include/net/dsa.h
-@@ -59,6 +59,7 @@ struct tc_action;
- #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	31
- #define DSA_TAG_PROTO_YT921X_VALUE		32
- #define DSA_TAG_PROTO_YT922X_VALUE		33
-+#define DSA_TAG_PROTO_YT922X_4B_VALUE		34
+@@ -62,6 +62,7 @@
+ #define DSA_TAG_PROTO_KSZ8463_VALUE		34
+ #define DSA_TAG_PROTO_MT7628_VALUE		35
+ #define DSA_TAG_PROTO_YT922X_VALUE		37
++#define DSA_TAG_PROTO_YT922X_4B_VALUE	38
+ #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	36
  
  enum dsa_tag_protocol {
- 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
-@@ -95,6 +96,7 @@ enum dsa_tag_protocol {
- 	DSA_TAG_PROTO_MXL862_8021Q	= DSA_TAG_PROTO_MXL862_8021Q_VALUE,
- 	DSA_TAG_PROTO_YT921X		= DSA_TAG_PROTO_YT921X_VALUE,
+@@ -102,6 +103,7 @@
+ 	DSA_TAG_PROTO_KSZ8463		= DSA_TAG_PROTO_KSZ8463_VALUE,
+ 	DSA_TAG_PROTO_MT7628		= DSA_TAG_PROTO_MT7628_VALUE,
  	DSA_TAG_PROTO_YT922X		= DSA_TAG_PROTO_YT922X_VALUE,
 +	DSA_TAG_PROTO_YT922X_4B		= DSA_TAG_PROTO_YT922X_4B_VALUE,
+ 	DSA_TAG_PROTO_MXL862_8021Q	= DSA_TAG_PROTO_MXL862_8021Q_VALUE,
  };
  
- struct dsa_switch;
 --- a/net/dsa/tag_yt922x.c
 +++ b/net/dsa/tag_yt922x.c
 @@ -7,6 +7,7 @@
@@ -192,7 +192,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  
  #include "tag.h"
  
-@@ -101,8 +102,77 @@ static const struct dsa_device_ops yt922
+@@ -101,8 +102,77 @@
  	.needed_headroom = YT922X_TAG_LEN,
  };
  

@@ -25,8 +25,8 @@ Signed-off-by: Robert Marko <robert.marko@sartura.hr>
  #
  
  config MULTIPLEXER
--	tristate
+-	bool
 +	tristate "Multiplexer core"
  
- menu "Multiplexer drivers"
- 	depends on MULTIPLEXER
+ config MUX_CORE
+ 	bool "Generic Multiplexer Support"

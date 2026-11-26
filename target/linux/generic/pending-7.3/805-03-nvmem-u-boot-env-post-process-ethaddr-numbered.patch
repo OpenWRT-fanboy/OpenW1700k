@@ -20,8 +20,8 @@ Signed-off-by: "Michael C. Pratt" <mcpratt@pm.me>
 +#include <linux/ctype.h>
  #include <linux/etherdevice.h>
  #include <linux/export.h>
- #include <linux/if_ether.h>
-@@ -91,6 +92,22 @@ static int u_boot_env_parse_cells(struct
+ #include <linux/hex.h>
+@@ -92,6 +93,22 @@
  			}
  		}
  

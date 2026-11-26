@@ -32,17 +32,17 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 
 --- a/drivers/base/base.h
 +++ b/drivers/base/base.h
-@@ -103,6 +103,9 @@ struct driver_private {
-  * @dead - This device is currently either in the process of or has been
-  *	removed from the system. Any asynchronous events scheduled for this
-  *	device should exit without taking any action.
+@@ -103,6 +103,9 @@
+  *			   dev_err_probe() for later retrieval via debugfs
+  * @device: pointer back to the struct device that this structure is
+  *	    associated with.
 + * @reprobe - request scheduled with device_schedule_reprobe(), held until
 + *	its work has released the driver; cancelled when the binding that
 + *	scheduled it ends
-  *
-  * Nothing outside of the driver core should ever touch these fields.
-  */
-@@ -116,6 +119,7 @@ struct device_private {
+  * @dead: This device is currently either in the process of or has been
+  *	  removed from the system. Any asynchronous events scheduled for this
+  *	  device should exit without taking any action.
+@@ -119,6 +122,7 @@
  	const struct device_driver *async_driver;
  	char *deferred_probe_reason;
  	struct device *device;
@@ -52,7 +52,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #define to_device_private_parent(obj)	\
 --- a/drivers/base/dd.c
 +++ b/drivers/base/dd.c
-@@ -601,6 +601,40 @@ static ssize_t state_synced_show(struct
+@@ -591,6 +591,40 @@
  }
  static DEVICE_ATTR_RW(state_synced);
  
@@ -92,8 +92,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +
  static void device_unbind_cleanup(struct device *dev)
  {
- 	devres_release_all(dev);
-@@ -608,6 +642,7 @@ static void device_unbind_cleanup(struct
+ 	if (dev->driver->p_cb.post_unbind_rust)
+@@ -600,6 +634,7 @@
  	kfree(dev->dma_range_map);
  	dev->dma_range_map = NULL;
  	device_set_driver(dev, NULL);
@@ -101,7 +101,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	dev_set_drvdata(dev, NULL);
  	dev_pm_domain_detach(dev, dev->power.detach_power_off);
  	if (dev->pm_domain && dev->pm_domain->dismiss)
-@@ -1452,3 +1487,139 @@ void driver_detach(const struct device_d
+@@ -1444,3 +1479,139 @@
  		put_device(dev);
  	}
  }
@@ -243,7 +243,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +EXPORT_SYMBOL_GPL(device_schedule_reprobe);
 --- a/include/linux/device.h
 +++ b/include/linux/device.h
-@@ -1242,6 +1242,8 @@ int  __must_check device_attach(struct d
+@@ -1320,6 +1320,8 @@
  int __must_check driver_attach(const struct device_driver *drv);
  void device_initial_probe(struct device *dev);
  int __must_check device_reprobe(struct device *dev);

@@ -27,7 +27,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  #include "mtk_eth_soc.h"
  #include "mtk_wed.h"
  
-@@ -179,7 +180,8 @@ mtk_flow_mangle_ipv4(const struct flow_a
+@@ -183,7 +184,8 @@
   * magic etype later via mtk_foe_entry_set_dsa()) or the outer 802.1Q
   * VID the PPE should push on the egressing frame (tag_8021q taggers
   * that use an outer Q-in-Q tag with a standalone per-port VID, i.e.
@@ -37,7 +37,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
   *
   * push_vid may be NULL for callers that only want the idev->conduit
   * substitution (e.g. ingress-side ppe_idx selection, where no VID
-@@ -208,6 +210,12 @@ mtk_flow_get_dsa_port(struct net_device
+@@ -212,6 +214,12 @@
  		if (push_vid)
  			*push_vid = dsa_tag_8021q_standalone_vid(dp);
  		break;
@@ -50,7 +50,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	default:
  		return -ENODEV;
  	}
-@@ -223,11 +231,11 @@ mtk_flow_get_dsa_port(struct net_device
+@@ -227,11 +235,11 @@
  static int
  mtk_flow_set_output_device(struct mtk_eth *eth, struct mtk_foe_entry *foe,
  			   struct net_device *dev, const u8 *dest_mac,
@@ -64,7 +64,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	u16 push_vid = 0;
  
  	if (mtk_flow_get_wdma_info(dev, dest_mac, &info) == 0) {
-@@ -267,10 +275,18 @@ mtk_flow_set_output_device(struct mtk_et
+@@ -271,10 +279,18 @@
  		return -EOPNOTSUPP;
  
  	if (dsa_port >= 0) {
@@ -86,8 +86,8 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	}
  
  	if (dsa_port >= 0 && dsa_port < MTK_DSA_USER_PORT_MAX) {
-@@ -529,7 +545,8 @@ mtk_flow_offload_replace(struct mtk_eth
- 	}
+@@ -542,7 +558,8 @@
+ 		mtk_foe_entry_set_pppoe(eth, &foe, data.pppoe.sid);
  
  	err = mtk_flow_set_output_device(eth, &foe, odev, data.eth.h_dest,
 -					 &wed_index, &wcid);

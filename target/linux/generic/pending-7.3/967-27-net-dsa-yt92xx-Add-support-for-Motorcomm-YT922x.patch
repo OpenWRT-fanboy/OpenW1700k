@@ -11,25 +11,25 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
 ---
 --- a/include/net/dsa.h
 +++ b/include/net/dsa.h
-@@ -58,6 +58,7 @@ struct tc_action;
- #define DSA_TAG_PROTO_MXL862_VALUE		30
- #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	31
- #define DSA_TAG_PROTO_YT921X_VALUE		32
-+#define DSA_TAG_PROTO_YT922X_VALUE		33
+@@ -61,6 +61,7 @@
+ #define DSA_TAG_PROTO_NETC_VALUE		33
+ #define DSA_TAG_PROTO_KSZ8463_VALUE		34
+ #define DSA_TAG_PROTO_MT7628_VALUE		35
++#define DSA_TAG_PROTO_YT922X_VALUE		37
+ #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	36
  
  enum dsa_tag_protocol {
- 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
-@@ -93,6 +94,7 @@ enum dsa_tag_protocol {
- 	DSA_TAG_PROTO_MXL862		= DSA_TAG_PROTO_MXL862_VALUE,
- 	DSA_TAG_PROTO_MXL862_8021Q	= DSA_TAG_PROTO_MXL862_8021Q_VALUE,
- 	DSA_TAG_PROTO_YT921X		= DSA_TAG_PROTO_YT921X_VALUE,
+@@ -100,6 +101,7 @@
+ 	DSA_TAG_PROTO_NETC		= DSA_TAG_PROTO_NETC_VALUE,
+ 	DSA_TAG_PROTO_KSZ8463		= DSA_TAG_PROTO_KSZ8463_VALUE,
+ 	DSA_TAG_PROTO_MT7628		= DSA_TAG_PROTO_MT7628_VALUE,
 +	DSA_TAG_PROTO_YT922X		= DSA_TAG_PROTO_YT922X_VALUE,
+ 	DSA_TAG_PROTO_MXL862_8021Q	= DSA_TAG_PROTO_MXL862_8021Q_VALUE,
  };
  
- struct dsa_switch;
 --- a/net/dsa/Kconfig
 +++ b/net/dsa/Kconfig
-@@ -210,4 +210,10 @@ config NET_DSA_TAG_YT921X
+@@ -234,4 +234,10 @@
  	  Say Y or M if you want to enable support for tagging frames for
  	  Motorcomm YT921x switches.
  
@@ -42,7 +42,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  endif
 --- a/net/dsa/Makefile
 +++ b/net/dsa/Makefile
-@@ -42,6 +42,7 @@ obj-$(CONFIG_NET_DSA_TAG_TRAILER) += tag
+@@ -45,6 +45,7 @@
  obj-$(CONFIG_NET_DSA_TAG_VSC73XX_8021Q) += tag_vsc73xx_8021q.o
  obj-$(CONFIG_NET_DSA_TAG_XRS700X) += tag_xrs700x.o
  obj-$(CONFIG_NET_DSA_TAG_YT921X) += tag_yt921x.o
@@ -163,7 +163,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
 +module_dsa_tag_driver(yt922x_netdev_ops);
 --- a/drivers/net/dsa/Kconfig
 +++ b/drivers/net/dsa/Kconfig
-@@ -157,11 +157,12 @@ config NET_DSA_VITESSE_VSC73XX_PLATFORM
+@@ -169,11 +169,12 @@
  	  and VSC7398 SparX integrated ethernet switches, connected over
  	  a CPU-attached address bus and work in memory-mapped I/O mode.
  
@@ -181,7 +181,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  endmenu
 --- a/drivers/net/dsa/Makefile
 +++ b/drivers/net/dsa/Makefile
-@@ -14,7 +14,7 @@ obj-$(CONFIG_NET_DSA_SMSC_LAN9303_MDIO)
+@@ -15,7 +15,7 @@
  obj-$(CONFIG_NET_DSA_VITESSE_VSC73XX) += vitesse-vsc73xx-core.o
  obj-$(CONFIG_NET_DSA_VITESSE_VSC73XX_PLATFORM) += vitesse-vsc73xx-platform.o
  obj-$(CONFIG_NET_DSA_VITESSE_VSC73XX_SPI) += vitesse-vsc73xx-spi.o
@@ -200,7 +200,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  #include <linux/module.h>
  #include <linux/of.h>
  #include <linux/of_mdio.h>
-@@ -111,6 +112,7 @@ struct yt921x_info {
+@@ -111,6 +112,7 @@
  #define YT921X_PORT_MASK_INT0_n(n)	GENMASK((n) - 1, 0)
  #define YT921X_PORT_MASK_EXT0		BIT(8)
  #define YT921X_PORT_MASK_EXT1		BIT(9)
@@ -208,7 +208,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  
  static const struct yt921x_info yt921x_infos[] = {
  	{
-@@ -148,6 +150,11 @@ static const struct yt921x_info yt921x_i
+@@ -148,6 +150,11 @@
  		YT921X_PORT_MASK_INT0_n(8),
  		YT921X_PORT_MASK_EXT0 | YT921X_PORT_MASK_EXT1,
  	},
@@ -220,7 +220,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	{}
  };
  
-@@ -158,6 +165,7 @@ static const struct yt921x_info yt921x_i
+@@ -158,6 +165,7 @@
  #define YT921X_POLL_SLEEP_US	10000
  #define YT921X_POLL_TIMEOUT_US	100000
  
@@ -228,7 +228,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  /* The interval should be small enough to avoid overflow of 32bit MIBs.
   *
   * Until we can read MIBs from stats64 call directly (i.e. sleep
-@@ -560,10 +568,12 @@ yt921x_intif_write(struct yt921x_priv *p
+@@ -560,10 +568,12 @@
  static int yt921x_mbus_int_read(struct mii_bus *mbus, int port, int reg)
  {
  	struct yt921x_priv *priv = mbus->priv;
@@ -242,7 +242,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  		return U16_MAX;
  
  	mutex_lock(&priv->reg_lock);
-@@ -579,9 +589,11 @@ static int
+@@ -579,9 +589,11 @@
  yt921x_mbus_int_write(struct mii_bus *mbus, int port, int reg, u16 data)
  {
  	struct yt921x_priv *priv = mbus->priv;
@@ -255,7 +255,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  		return -ENODEV;
  
  	mutex_lock(&priv->reg_lock);
-@@ -596,19 +608,21 @@ yt921x_mbus_int_init(struct yt921x_priv
+@@ -596,19 +608,21 @@
  {
  	struct device *dev = to_device(priv);
  	struct mii_bus *mbus;
@@ -278,7 +278,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  
  	res = devm_of_mdiobus_register(dev, mbus, mnp);
  	if (res)
-@@ -4748,6 +4762,14 @@ static int yt921x_dsa_setup(struct dsa_s
+@@ -4748,6 +4762,14 @@
  	struct device_node *child;
  	int res;
  
@@ -293,7 +293,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	mutex_lock(&priv->reg_lock);
  	res = yt921x_chip_reset(priv);
  	mutex_unlock(&priv->reg_lock);
-@@ -4869,6 +4891,1401 @@ static const struct dsa_switch_ops yt921
+@@ -4869,6 +4891,1401 @@
  	.setup			= yt921x_dsa_setup,
  };
  
@@ -1695,7 +1695,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  static void yt921x_mdio_shutdown(struct mdio_device *mdiodev)
  {
  	struct yt921x_priv *priv = mdiodev_get_drvdata(mdiodev);
-@@ -4876,6 +6293,7 @@ static void yt921x_mdio_shutdown(struct
+@@ -4876,6 +6293,7 @@
  	if (!priv)
  		return;
  
@@ -1703,7 +1703,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	dsa_switch_shutdown(&priv->ds);
  }
  
-@@ -4886,10 +6304,13 @@ static void yt921x_mdio_remove(struct md
+@@ -4886,10 +6304,13 @@
  	if (!priv)
  		return;
  
@@ -1718,7 +1718,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	}
  
  	dsa_unregister_switch(&priv->ds);
-@@ -4913,11 +6334,16 @@ static void yt921x_mdio_remove(struct md
+@@ -4913,11 +6334,16 @@
  
  static int yt921x_mdio_probe(struct mdio_device *mdiodev)
  {
@@ -1735,7 +1735,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
  	if (!priv)
  		return -ENOMEM;
-@@ -4932,14 +6358,15 @@ static int yt921x_mdio_probe(struct mdio
+@@ -4932,14 +6358,15 @@
  
  	mutex_init(&priv->reg_lock);
  
@@ -1753,7 +1753,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	}
  
  	ds = &priv->ds;
-@@ -4947,12 +6374,12 @@ static int yt921x_mdio_probe(struct mdio
+@@ -4947,12 +6374,12 @@
  	ds->assisted_learning_on_cpu_port = true;
  	ds->dscp_prio_mapping_is_global = true;
  	ds->priv = priv;
@@ -1772,7 +1772,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  
  	mdiodev_set_drvdata(mdiodev, priv);
  
-@@ -4960,12 +6387,19 @@ static int yt921x_mdio_probe(struct mdio
+@@ -4960,12 +6387,19 @@
  }
  
  static const struct of_device_id yt921x_of_match[] = {
@@ -1794,7 +1794,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	.probe = yt921x_mdio_probe,
  	.remove = yt921x_mdio_remove,
  	.shutdown = yt921x_mdio_shutdown,
-@@ -4975,8 +6409,9 @@ static struct mdio_driver yt921x_mdio_dr
+@@ -4975,8 +6409,9 @@
  	},
  };
  
@@ -1816,7 +1816,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  #define YT921X_PON_STRAP_FUNC		0x80320
  #define YT921X_PON_STRAP_VAL		0x80324
  #define YT921X_PON_STRAP_CAP		0x80328
-@@ -837,6 +838,7 @@ enum yt921x_fdb_entry_status {
+@@ -837,6 +838,7 @@
  
  #define YT9215_MAJOR	0x9002
  #define YT9218_MAJOR	0x9001
@@ -1824,7 +1824,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  
  /* required for a hard reset */
  #define YT921X_RST_DELAY_US	10000
-@@ -853,6 +855,92 @@ enum yt921x_fdb_entry_status {
+@@ -853,6 +855,92 @@
  /* 8 internal + 2 external + 1 mcu */
  #define YT921X_PORT_NUM			11
  
@@ -1917,7 +1917,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  #define yt921x_port_is_internal(port) ((port) < 8)
  #define yt921x_port_is_external(port) ((port) == 8 || (port) == 9)
  
-@@ -938,6 +1026,14 @@ struct yt921x_port {
+@@ -938,6 +1026,14 @@
  	struct yt921x_mib mib;
  	u64 rx_frames;
  	u64 tx_frames;
@@ -1932,7 +1932,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  };
  
  struct yt921x_reg_ops {
-@@ -945,9 +1041,26 @@ struct yt921x_reg_ops {
+@@ -945,9 +1041,26 @@
  	int (*write)(void *context, u32 reg, u32 val);
  };
  
@@ -1959,7 +1959,7 @@ Signed-off-by: Shi Jiayang <shi05275@163.com>
  	const struct yt921x_info *info;
  	unsigned int meter_slot_ns;
  	unsigned int port_shape_slot_ns;
-@@ -965,6 +1078,7 @@ struct yt921x_priv {
+@@ -965,6 +1078,7 @@
  	struct mii_bus *mbus_ext;
  
  	struct yt921x_port ports[YT921X_PORT_NUM];

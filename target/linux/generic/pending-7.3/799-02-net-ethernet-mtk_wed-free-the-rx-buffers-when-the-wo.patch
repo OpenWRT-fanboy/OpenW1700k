@@ -19,7 +19,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 ---
 --- a/drivers/net/ethernet/mediatek/mtk_wed.c
 +++ b/drivers/net/ethernet/mediatek/mtk_wed.c
-@@ -782,7 +782,7 @@ mtk_wed_hwrro_buffer_alloc(struct mtk_we
+@@ -782,7 +782,7 @@
  	dma_addr_t desc_phys;
  	int i, page_idx = 0;
  
@@ -27,8 +27,8 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	if (!dev->wlan.hw_rro || dev->hw_rro.desc)
  		return 0;
  
- 	page_list = kcalloc(n_pages, sizeof(*page_list), GFP_KERNEL);
-@@ -842,6 +842,9 @@ mtk_wed_rx_buffer_alloc(struct mtk_wed_d
+ 	page_list = kzalloc_objs(*page_list, n_pages);
+@@ -842,6 +842,9 @@
  	struct mtk_wed_bm_desc *desc;
  	dma_addr_t desc_phys;
  
@@ -38,7 +38,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	dev->rx_buf_ring.size = dev->wlan.rx_nbuf;
  	desc = dma_alloc_coherent(dev->hw->dev,
  				  dev->wlan.rx_nbuf * sizeof(*desc),
-@@ -1746,8 +1749,6 @@ mtk_wed_rx_reset(struct mtk_wed_device *
+@@ -1746,8 +1749,6 @@
  	ret = mtk_wed_mcu_send_msg(wo, MTK_WED_MODULE_ID_WO,
  				   MTK_WED_WO_CMD_CHANGE_STATE, &val,
  				   sizeof(val), true);
@@ -47,7 +47,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	/* wed_rx_ring_reset */
  	for (i = 0; i < ARRAY_SIZE(dev->rx_ring); i++) {
-@@ -1759,7 +1760,7 @@ mtk_wed_rx_reset(struct mtk_wed_device *
+@@ -1759,7 +1760,7 @@
  	}
  	mtk_wed_free_rx_buffer(dev);
  
