@@ -1,0 +1,167 @@
+Subject: [PATCH] wifi: mt76: mt7996: bypass NPU on 5 GHz when 6 GHz is active
+
+On MT7996 with Airoha NPU offload, 5 GHz and 6 GHz both use WDMA1. When
+stations are active on both bands, concurrent downlink flows can collapse
+to a few hundred Mbps.
+
+Add a reversible module parameter. When both a 5 GHz and a 6 GHz station
+are present, refuse NPU offload for 5 GHz flows so they use the host DMA
+path, tear down and rebind hardware flow offload entries, and restore the
+normal path once the contention state ends.
+
+The parameter is disabled by default and can be enabled with:
+
+  options mt7996e npu_bypass_5g_with_6g=Y
+---
+--- a/mt7996/main.c
++++ b/mt7996/main.c
+@@ -6,6 +6,7 @@
+ #include "mt7996.h"
+ #include "mcu.h"
+ #include "mac.h"
++#include <net/netfilter/nf_flow_table.h>
+ 
+ int mt7996_run(struct mt7996_phy *phy)
+ {
+@@ -1599,6 +1600,61 @@
+ 	return err;
+ }
+ 
++static void mt7996_npu_bypass_check(struct mt7996_dev *dev,
++				    struct ieee80211_vif *vif,
++				    struct ieee80211_sta *sta)
++{
++	struct mt7996_sta *msta = (struct mt7996_sta *)sta->drv_priv;
++	struct net_device *ndev[MT_BAND2 + 1] = {};
++	struct wireless_dev *wdev = ieee80211_vif_to_wdev(vif);
++	struct mt7996_sta_link *msta_link;
++	struct mt76_phy *phy5, *phy6;
++	bool bypass;
++	int i;
++
++	if (!npu_bypass_5g_with_6g)
++		return;
++	if (!wdev || !wdev->netdev)
++		return;
++
++	mutex_lock(&dev->mt76.mutex);
++	msta_link = mt7996_sta_link_protected(dev, msta, msta->deflink_id);
++	if (msta_link && msta_link->wcid.phy_idx <= MT_BAND2) {
++		i = msta_link->wcid.phy_idx;
++		dev_hold(wdev->netdev);
++		if (dev->npu_bypass_ndev[i])
++			dev_put(dev->npu_bypass_ndev[i]);
++		dev->npu_bypass_ndev[i] = wdev->netdev;
++	}
++
++	phy5 = dev->mt76.phys[MT_BAND1];
++	phy6 = dev->mt76.phys[MT_BAND2];
++	bypass = phy5 && phy5->num_sta > 0 && phy6 && phy6->num_sta > 0;
++	if (bypass == dev->npu_bypass_5g) {
++		mutex_unlock(&dev->mt76.mutex);
++		return;
++	}
++	dev->npu_bypass_5g = bypass;
++
++	for (i = MT_BAND0; i <= MT_BAND2; i++) {
++		ndev[i] = dev->npu_bypass_ndev[i];
++		if (ndev[i])
++			dev_hold(ndev[i]);
++	}
++	mutex_unlock(&dev->mt76.mutex);
++
++	if (!IS_ENABLED(CONFIG_NF_FLOW_TABLE))
++		goto release;
++
++	for (i = MT_BAND0; i <= MT_BAND2; i++)
++		if (ndev[i])
++			nf_flow_table_cleanup(ndev[i]);
++release:
++	for (i = MT_BAND0; i <= MT_BAND2; i++)
++		if (ndev[i])
++			dev_put(ndev[i]);
++}
++
+ static int
+ mt7996_mac_sta_add(struct mt7996_dev *dev, struct ieee80211_vif *vif,
+ 		   struct ieee80211_sta *sta)
+@@ -1621,6 +1677,8 @@
+ 
+ 	mutex_unlock(&dev->mt76.mutex);
+ 
++	mt7996_npu_bypass_check(dev, vif, sta);
++
+ 	return err;
+ }
+ 
+@@ -2067,6 +2125,8 @@
+ 	for (i = 0; i < ARRAY_SIZE(msta->link); i++)
+ 		mt7996_mac_sta_remove_link(dev, sta, i, true);
+ 	mutex_unlock(&dev->mt76.mutex);
++
++	mt7996_npu_bypass_check(dev, vif, sta);
+ }
+ 
+ static void
+@@ -3328,6 +3388,11 @@
+ 	    !mt76_npu_device_active(&dev->mt76))
+ 		return -ENODEV;
+ 
++	if (is_mt7996(&dev->mt76) && mt76_npu_device_active(&dev->mt76) &&
++	    !mtk_wed_device_active(wed) && npu_bypass_5g_with_6g &&
++	    dev->npu_bypass_5g && msta_link->wcid.phy_idx == MT_BAND1)
++		return -ENODEV;
++
+ 	path->type = DEV_PATH_MTK_WDMA;
+ 	path->dev = ctx->dev;
+ #ifdef CONFIG_NET_MEDIATEK_SOC_WED
+--- a/mt7996/mmio.c
++++ b/mt7996/mmio.c
+@@ -17,6 +17,11 @@
+ static bool wed_enable;
+ module_param(wed_enable, bool, 0644);
+ 
++bool npu_bypass_5g_with_6g;
++module_param(npu_bypass_5g_with_6g, bool, 0644);
++MODULE_PARM_DESC(npu_bypass_5g_with_6g,
++		 "Bypass NPU for 5 GHz when a 6 GHz station is active");
++
+ #define INVALID_REG_ADDR	0xffffffff
+ 
+ static const struct __base mt7996_reg_base[] = {
+--- a/mt7996/mt7996.h
++++ b/mt7996/mt7996.h
+@@ -570,6 +570,9 @@
+ 
+ 	dma_addr_t npu_txd_addr[2 * MT7996_NPU_TXD_SIZE];
+ 
++	bool npu_bypass_5g;
++	struct net_device *npu_bypass_ndev[MT_BAND2 + 1];
++
+ 	bool ibf;
+ 	u8 fw_debug_wm;
+ 	u8 fw_debug_wa;
+@@ -760,6 +763,8 @@
+ 	for (int __i = 0; __i < ARRAY_SIZE((dev)->radio_phy); __i++)	\
+ 		if (((phy) = (dev)->radio_phy[__i]) != NULL)
+ 
++extern bool npu_bypass_5g_with_6g;
++
+ extern const struct ieee80211_ops mt7996_ops;
+ extern struct pci_driver mt7996_pci_driver;
+ extern struct pci_driver mt7996_hif_driver;
+--- a/mt7996/init.c
++++ b/mt7996/init.c
+@@ -1869,5 +1869,12 @@
+ 		mt7996_rro_msdu_page_map_free(dev);
+ 	tasklet_disable(&dev->mt76.irq_tasklet);
+ 
++	for (i = MT_BAND0; i <= MT_BAND2; i++) {
++		if (dev->npu_bypass_ndev[i]) {
++			dev_put(dev->npu_bypass_ndev[i]);
++			dev->npu_bypass_ndev[i] = NULL;
++		}
++	}
++
+ 	mt76_free_device(&dev->mt76);
+ }

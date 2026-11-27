@@ -1,0 +1,19 @@
+Subject: [PATCH] airoha: reserve PSE pages for WDMA-queues
+
+Queues 0-1 are the WDMA NBQs used by NPU-offloaded WiFi flows.
+Reserve them so CDM3 stats traffic from wired flows cannot
+drain the shared pool and backpressure WiFi.
+
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -383,6 +383,9 @@ static void airoha_fe_pse_ports_init(struct airoha_eth *eth)
+ 	for (q = 0; q < pse_port_num_queues[FE_PSE_PORT_CDM3] - 1; q++)
+ 		airoha_fe_set_pse_oq_rsv(eth, FE_PSE_PORT_CDM3, q, 0);
+ 	/* CDM4 */
++	for (q = 0; q < 2; q++)
++		airoha_fe_set_pse_oq_rsv(eth, FE_PSE_PORT_CDM4, q,
++					 PSE_QUEUE_RSV_PAGES);
+ 	for (q = 4; q < pse_port_num_queues[FE_PSE_PORT_CDM4]; q++)
+ 		airoha_fe_set_pse_oq_rsv(eth, FE_PSE_PORT_CDM4, q,
+ 					 PSE_QUEUE_RSV_PAGES);
